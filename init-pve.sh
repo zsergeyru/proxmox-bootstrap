@@ -17,7 +17,7 @@ set -Eeuo pipefail
 # Все роли, ACL, API-токены, pools, templates, deployer и прочая инфраструктура
 # описываются и создаются только кодом из закрытого репозитория.
 
-STAGE0_VERSION=2
+STAGE0_VERSION=3
 
 PRIVATE_REPO="git@github.com:zsergeyru/proxmox.git"
 PRIVATE_BRANCH="main"
@@ -34,6 +34,7 @@ TEMP_REPO="${STAGE0_DIR}/private-repo"
 PERMANENT_STATE_DIR="/var/lib/proxmox-deployer/state"
 COMPLETE_MARKER="${PERMANENT_STATE_DIR}/stage0-complete"
 LOCK_FILE="/run/lock/proxmox-bootstrap-stage0.lock"
+PRIVATE_INIT_CANONICAL="/var/lib/proxmox-deployer/repo/scripts/pve/bootstrap/init-pve.sh"
 
 FORWARD_ARGS=()
 
@@ -197,6 +198,16 @@ git_private() {
     env GIT_SSH_COMMAND="ssh -F ${SSH_CONFIG}" git "$@"
 }
 
+private_branch_accessible() {
+    local out
+    if ! out="$(git_private ls-remote "$PRIVATE_REPO" "refs/heads/${PRIVATE_BRANCH}" 2>/dev/null)"; then
+        return 1
+    fi
+
+    [[ -n "$out" ]] \
+        || die "Приватный репозиторий доступен, но ожидаемая ветка ${PRIVATE_BRANCH} отсутствует. Bootstrap не будет продолжать с другой веткой."
+}
+
 show_deploy_key_instructions() {
     printf '\nОЖИДАНИЕ АВТОРИЗАЦИИ GITHUB\n\n'
     printf 'Добавьте следующий публичный ключ в приватный репозиторий zsergeyru/proxmox:\n\n'
@@ -207,8 +218,8 @@ show_deploy_key_instructions() {
 }
 
 ensure_private_repo_authorized() {
-    if git_private ls-remote "$PRIVATE_REPO" HEAD >/dev/null 2>&1; then
-        ok "Read-only доступ к приватному репозиторию уже подтверждён"
+    if private_branch_accessible; then
+        ok "Read-only доступ к приватному репозиторию и ветке ${PRIVATE_BRANCH} уже подтверждён"
         return
     fi
 
@@ -226,11 +237,11 @@ ensure_private_repo_authorized() {
     # от ошибочно/неполностью добавленного Deploy Key.
     check_github_connectivity
 
-    if ! git_private ls-remote "$PRIVATE_REPO" HEAD >/dev/null 2>&1; then
-        die "После подтверждения read-only доступ к ${PRIVATE_REPO} по-прежнему отсутствует. Проверьте, что показанный public key добавлен именно в zsergeyru/proxmox как Deploy Key с выключенным Allow write access, и что SSH-доступ к github.com не блокируется. После исправления повторно запустите init-pve.sh."
+    if ! private_branch_accessible; then
+        die "После подтверждения read-only доступ к ${PRIVATE_REPO}, ветка ${PRIVATE_BRANCH}, по-прежнему отсутствует. Проверьте, что показанный public key добавлен именно в zsergeyru/proxmox как Deploy Key с выключенным Allow write access, и что SSH-доступ к github.com не блокируется. После исправления повторно запустите init-pve.sh."
     fi
 
-    ok "Read-only доступ к приватному репозиторию подтверждён после добавления Deploy Key"
+    ok "Read-only доступ к приватному репозиторию и ветке ${PRIVATE_BRANCH} подтверждён после добавления Deploy Key"
 }
 
 sync_private_repo() {
@@ -300,6 +311,11 @@ main() {
     if [[ -f "$COMPLETE_MARKER" ]]; then
         printf '\nStage 0 уже была успешно завершена.\n'
         printf 'Временная область bootstrap отсутствует; дальнейшая инициализация и сопровождение выполняются из приватного zsergeyru/proxmox.\n'
+        printf 'Private init: %s\n' "$PRIVATE_INIT_CANONICAL"
+
+        if (( ${#FORWARD_ARGS[@]} )); then
+            die "Параметр --update-system не выполняется повторно через Stage 0. Запустите: ${PRIVATE_INIT_CANONICAL} --update-system"
+        fi
         exit 0
     fi
 
