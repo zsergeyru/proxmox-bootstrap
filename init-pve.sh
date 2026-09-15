@@ -5,34 +5,42 @@ set -Eeuo pipefail
 # Публичная Stage 0 для нового Proxmox VE
 # =============================================================================
 #
-# Этот скрипт намеренно ничего не знает о внутренней архитектуре PVE-проекта.
-# Его единственная задача:
+# Этот скрипт намеренно почти ничего не знает о внутренней архитектуре PVE-проекта.
+# Его задача:
 #   1) обеспечить наличие Git/SSH;
-#   2) создать read-only GitHub Deploy Key;
-#   3) получить доступ к приватному zsergeyru/proxmox;
-#   4) временно клонировать private repo;
-#   5) передать управление приватному bootstrap.
+#   2) создать временный read-only GitHub Deploy Key;
+#   3) помочь человеку добавить public key в приватный zsergeyru/proxmox;
+#   4) получить временный shallow checkout private repo;
+#   5) передать управление приватному bootstrap;
+#   6) после успешного handoff удалить временную Stage 0 область целиком.
 #
 # Все роли, ACL, API-токены, pools, templates, deployer и прочая инфраструктура
 # описываются и создаются только кодом из закрытого репозитория.
 
+STAGE0_VERSION=2
+
 PRIVATE_REPO="git@github.com:zsergeyru/proxmox.git"
 PRIVATE_BRANCH="main"
 
+# Полностью временная рабочая область zero-day bootstrap.
 STAGE0_DIR="/var/lib/proxmox-bootstrap"
 KEY_FILE="${STAGE0_DIR}/github_proxmox_repo_ed25519"
 KEY_PUB_FILE="${KEY_FILE}.pub"
 KNOWN_HOSTS="${STAGE0_DIR}/known_hosts"
 SSH_CONFIG="${STAGE0_DIR}/ssh_config"
 TEMP_REPO="${STAGE0_DIR}/private-repo"
-COMPLETE_MARKER="${STAGE0_DIR}/stage0-complete"
+
+# После успешного handoff marker хранится уже в постоянном state private runtime.
+PERMANENT_STATE_DIR="/var/lib/proxmox-deployer/state"
+COMPLETE_MARKER="${PERMANENT_STATE_DIR}/stage0-complete"
+LOCK_FILE="/run/lock/proxmox-bootstrap-stage0.lock"
 
 FORWARD_ARGS=()
 
-log() { printf '\n==> %s\n' "$*"; }
-ok()  { printf '[ОК] %s\n' "$*"; }
+log()  { printf '\n==> %s\n' "$*"; }
+ok()   { printf '[ОК] %s\n' "$*"; }
 warn() { printf '[ПРЕДУПРЕЖДЕНИЕ] %s\n' "$*" >&2; }
-die() { printf '\nОШИБКА: %s\n' "$*" >&2; exit 1; }
+die()  { printf '\nОШИБКА: %s\n' "$*" >&2; exit 1; }
 
 usage() {
     cat <<'USAGE'
@@ -40,8 +48,11 @@ usage() {
   init-pve.sh [--update-system] [--help]
 
 Публичная нулевая стадия инициализации Proxmox VE.
-Она только подготавливает Git/SSH, создаёт read-only Deploy Key для приватного
+Она подготавливает временный read-only Deploy Key для приватного
 zsergeyru/proxmox и после авторизации передаёт управление приватному bootstrap.
+
+Если Deploy Key ещё не добавлен в GitHub, скрипт покажет public key и инструкцию,
+подождёт нажатия Enter и затем один раз повторит проверку доступа.
 
 Параметры:
   --update-system  передать приватной стадии запрос полного обновления PVE
@@ -70,14 +81,14 @@ command -v pveversion >/dev/null 2>&1 || die "Команда pveversion не н�
 pveversion >/dev/null
 ok "Proxmox VE обнаружен"
 
-mkdir -p "$STAGE0_DIR"
-chmod 0700 "$STAGE0_DIR"
-
-if [[ -f "$COMPLETE_MARKER" ]]; then
-    printf '\nStage 0 уже была успешно завершена.\n'
-    printf 'Дальнейшая инициализация и сопровождение выполняются из приватного zsergeyru/proxmox.\n'
-    exit 0
-fi
+acquire_stage0_lock() {
+    command -v flock >/dev/null 2>&1 \
+        || die "Не найдена команда flock; на штатном Proxmox VE она должна предоставляться util-linux"
+    install -d -m 0755 /run/lock
+    exec 9>"$LOCK_FILE"
+    flock -n 9 || die "Другой экземпляр публичной Stage 0 уже выполняется. Параллельный запуск запрещён."
+    ok "Получена эксклюзивная блокировка Stage 0"
+}
 
 ensure_minimal_packages() {
     local packages=(git openssh-client curl jq ca-certificates)
@@ -108,24 +119,56 @@ ensure_minimal_packages() {
     ok "Минимальный Git/SSH-набор установлен"
 }
 
+check_github_connectivity() {
+    log "Проверка доступности GitHub"
+
+    command -v getent >/dev/null 2>&1 || die "Не найдена обязательная команда getent"
+    getent ahosts github.com >/dev/null \
+        || die "Не работает DNS-разрешение github.com"
+    getent ahosts api.github.com >/dev/null \
+        || die "Не работает DNS-разрешение api.github.com"
+
+    curl -fsS --connect-timeout 10 --max-time 20 -o /dev/null https://github.com/ \
+        || die "GitHub недоступен по HTTPS с этого Proxmox host"
+    curl -fsS --connect-timeout 10 --max-time 20 -o /dev/null https://api.github.com/meta \
+        || die "GitHub API недоступен по HTTPS с этого Proxmox host"
+
+    ok "DNS и HTTPS-доступ к GitHub работают"
+}
+
+prepare_stage0_dir() {
+    install -d -o root -g root -m 0700 "$STAGE0_DIR"
+}
+
 prepare_github_key() {
-    log "Подготовка read-only Deploy Key для приватного GitHub-репозитория"
+    log "Подготовка временного read-only Deploy Key для приватного GitHub-репозитория"
 
     if [[ ! -f "$KEY_FILE" ]]; then
         ssh-keygen -q -t ed25519 -N '' \
             -C 'pve-zero-day-readonly-zsergeyru-proxmox' \
             -f "$KEY_FILE"
-        ok "Создан новый Deploy Key"
+        ok "Создан новый временный Deploy Key"
     else
-        ok "Deploy Key уже существует"
+        ok "Используется существующий временный Deploy Key"
     fi
 
     chmod 0600 "$KEY_FILE"
-    chmod 0644 "$KEY_PUB_FILE"
+
+    # Private key — source of truth. Public часть каждый запуск восстанавливается
+    # из него, поэтому потерянный/повреждённый .pub не ломает повторный запуск.
+    local tmp_pub derived_pub
+    tmp_pub="$(mktemp "${STAGE0_DIR}/.deploy-key-pub.XXXXXX")"
+    derived_pub="$(ssh-keygen -y -f "$KEY_FILE")" \
+        || { rm -f "$tmp_pub"; die "Не удалось прочитать существующий Deploy Key: ${KEY_FILE}"; }
+    [[ -n "$derived_pub" ]] \
+        || { rm -f "$tmp_pub"; die "Из private Deploy Key не удалось получить public key"; }
+    printf '%s %s\n' "$derived_pub" 'pve-zero-day-readonly-zsergeyru-proxmox' >"$tmp_pub"
+    install -o root -g root -m 0644 "$tmp_pub" "$KEY_PUB_FILE"
+    rm -f "$tmp_pub"
 
     local tmp_hosts
-    tmp_hosts="$(mktemp)"
-    curl -fsSL https://api.github.com/meta \
+    tmp_hosts="$(mktemp "${STAGE0_DIR}/.known-hosts.XXXXXX")"
+    curl -fsSL --connect-timeout 10 --max-time 20 https://api.github.com/meta \
         | jq -r '.ssh_keys[] | "github.com " + .' >"$tmp_hosts"
 
     [[ -s "$tmp_hosts" ]] || {
@@ -133,7 +176,7 @@ prepare_github_key() {
         die "Не удалось получить SSH host keys GitHub через api.github.com/meta"
     }
 
-    install -m 0644 "$tmp_hosts" "$KNOWN_HOSTS"
+    install -o root -g root -m 0644 "$tmp_hosts" "$KNOWN_HOSTS"
     rm -f "$tmp_hosts"
 
     cat >"$SSH_CONFIG" <<EOF_SSH
@@ -144,6 +187,8 @@ Host github.com
     IdentitiesOnly yes
     UserKnownHostsFile ${KNOWN_HOSTS}
     StrictHostKeyChecking yes
+    BatchMode yes
+    ConnectTimeout 10
 EOF_SSH
     chmod 0600 "$SSH_CONFIG"
 }
@@ -152,28 +197,60 @@ git_private() {
     env GIT_SSH_COMMAND="ssh -F ${SSH_CONFIG}" git "$@"
 }
 
-show_waiting() {
+show_deploy_key_instructions() {
     printf '\nОЖИДАНИЕ АВТОРИЗАЦИИ GITHUB\n\n'
     printf 'Добавьте следующий публичный ключ в приватный репозиторий zsergeyru/proxmox:\n\n'
     cat "$KEY_PUB_FILE"
-    printf '\nПуть: GitHub -> Settings -> Deploy keys -> Add deploy key\n'
+    printf '\nПуть: GitHub -> zsergeyru/proxmox -> Settings -> Deploy keys -> Add deploy key\n'
     printf 'Allow write access: ВЫКЛЮЧЕН\n'
-    printf '\nПосле добавления ключа снова запустите эту же команду.\n'
+    printf '\nПосле добавления ключа вернитесь в этот терминал.\n'
+}
+
+ensure_private_repo_authorized() {
+    if git_private ls-remote "$PRIVATE_REPO" HEAD >/dev/null 2>&1; then
+        ok "Read-only доступ к приватному репозиторию уже подтверждён"
+        return
+    fi
+
+    show_deploy_key_instructions
+
+    [[ -r /dev/tty ]] \
+        || die "Deploy Key ещё не авторизован, а интерактивный терминал недоступен. Добавьте показанный public key в GitHub и повторно запустите init-pve.sh."
+
+    printf 'Нажмите Enter после добавления Deploy Key в GitHub...' >/dev/tty
+    IFS= read -r _ </dev/tty \
+        || die "Не удалось дождаться подтверждения через терминал"
+    printf '\n' >/dev/tty
+
+    # После ожидания отдельно перепроверяем сеть, чтобы отличить проблему GitHub
+    # от ошибочно/неполностью добавленного Deploy Key.
+    check_github_connectivity
+
+    if ! git_private ls-remote "$PRIVATE_REPO" HEAD >/dev/null 2>&1; then
+        die "После подтверждения read-only доступ к ${PRIVATE_REPO} по-прежнему отсутствует. Проверьте, что показанный public key добавлен именно в zsergeyru/proxmox как Deploy Key с выключенным Allow write access, и что SSH-доступ к github.com не блокируется. После исправления повторно запустите init-pve.sh."
+    fi
+
+    ok "Read-only доступ к приватному репозиторию подтверждён после добавления Deploy Key"
 }
 
 sync_private_repo() {
-    log "Получение приватного bootstrap"
+    log "Получение временного private bootstrap"
 
     if [[ ! -d "$TEMP_REPO/.git" ]]; then
         rm -rf "$TEMP_REPO"
         git_private clone --depth 1 --branch "$PRIVATE_BRANCH" "$PRIVATE_REPO" "$TEMP_REPO"
     else
+        local origin_url
+        origin_url="$(git_private -C "$TEMP_REPO" remote get-url origin 2>/dev/null || true)"
+        [[ "$origin_url" == "$PRIVATE_REPO" ]] \
+            || die "Временный checkout ${TEMP_REPO} имеет неожиданный origin '${origin_url:-не задан}'. Ожидается '${PRIVATE_REPO}'. Автоматическая подмена origin запрещена."
+
         git_private -C "$TEMP_REPO" fetch --depth 1 origin "$PRIVATE_BRANCH"
         git_private -C "$TEMP_REPO" reset --hard FETCH_HEAD
         git_private -C "$TEMP_REPO" clean -ffd
     fi
 
-    ok "Приватный репозиторий получен"
+    ok "Приватный репозиторий получен shallow clone глубиной 1 commit"
 }
 
 handoff_to_private_bootstrap() {
@@ -189,35 +266,48 @@ handoff_to_private_bootstrap() {
 }
 
 cleanup_stage0() {
-    local revision now
+    local revision now marker_tmp
     revision="$(git -C "$TEMP_REPO" rev-parse HEAD 2>/dev/null || true)"
     now="$(date --iso-8601=seconds)"
 
-    cat >"$COMPLETE_MARKER" <<EOF_MARKER
+    [[ -d "$PERMANENT_STATE_DIR" ]] \
+        || die "Private Stage 1 завершилась, но постоянный state-каталог ${PERMANENT_STATE_DIR} не найден; временная Stage 0 область сохранена для безопасного повторного запуска"
+
+    # Подготавливаем marker вне временной области, но публикуем его только после
+    # успешного удаления всей Stage 0 директории.
+    marker_tmp="${PERMANENT_STATE_DIR}/.stage0-complete.$$.tmp"
+    cat >"$marker_tmp" <<EOF_MARKER
 stage0=complete
+stage0_version=${STAGE0_VERSION}
 timestamp=${now}
 private_revision=${revision}
 EOF_MARKER
+    chmod 0600 "$marker_tmp"
+
+    rm -rf "$STAGE0_DIR"
+    [[ ! -e "$STAGE0_DIR" ]] \
+        || { rm -f "$marker_tmp"; die "Не удалось полностью удалить временную Stage 0 область ${STAGE0_DIR}"; }
+
+    mv -f "$marker_tmp" "$COMPLETE_MARKER"
     chmod 0600 "$COMPLETE_MARKER"
 
-    # После успешного handoff приватная стадия уже сохранила Deploy Key и checkout
-    # в своей канонической файловой структуре. Временные zero-day копии больше не нужны.
-    rm -rf "$TEMP_REPO"
-    rm -f "$KEY_FILE" "$KEY_PUB_FILE" "$KNOWN_HOSTS" "$SSH_CONFIG"
-
-    ok "Stage 0 завершена; временные zero-day credentials и checkout удалены"
+    ok "Stage 0 завершена; временный Deploy Key и temporary checkout удалены вместе с ${STAGE0_DIR}"
 }
 
 main() {
-    ensure_minimal_packages
-    prepare_github_key
+    acquire_stage0_lock
 
-    if ! git_private ls-remote "$PRIVATE_REPO" HEAD >/dev/null 2>&1; then
-        show_waiting
+    if [[ -f "$COMPLETE_MARKER" ]]; then
+        printf '\nStage 0 уже была успешно завершена.\n'
+        printf 'Временная область bootstrap отсутствует; дальнейшая инициализация и сопровождение выполняются из приватного zsergeyru/proxmox.\n'
         exit 0
     fi
 
-    ok "Read-only доступ к приватному репозиторию подтверждён"
+    prepare_stage0_dir
+    ensure_minimal_packages
+    check_github_connectivity
+    prepare_github_key
+    ensure_private_repo_authorized
     sync_private_repo
     handoff_to_private_bootstrap
     cleanup_stage0
