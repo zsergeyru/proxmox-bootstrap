@@ -8,7 +8,7 @@ set -Eeuo pipefail
 # управление PVE Configuration. Повторный запуск обновляет canonical private
 # checkout и снова запускает актуальную PVE Configuration.
 
-PUBLIC_BOOTSTRAP_VERSION=6
+PUBLIC_BOOTSTRAP_VERSION=7
 
 PRIVATE_REPO="git@github.com:zsergeyru/proxmox.git"
 PRIVATE_BRANCH="main"
@@ -63,8 +63,8 @@ Public Bootstrap — публичная точка входа проекта Pro
   - получает private zsergeyru/proxmox;
   - запускает scripts/pve/setup/configure-pve.sh.
 
-Повторный запуск:
-  - использует постоянный read-only Deploy Key;
+Повторный запуск или продолжение незавершённого первого запуска:
+  - использует постоянный read-only Deploy Key, если permanent runtime уже готов;
   - обновляет /var/lib/proxmox-deployer/repo;
   - запускает актуальную PVE Configuration.
 
@@ -246,18 +246,29 @@ sync_temporary_private_repo() {
 
 handoff_to_pve_configuration() {
     local configure="${TEMP_REPO}/scripts/pve/setup/configure-pve.sh"
+    local revision
     [[ -f "$configure" ]] || die "В private repo не найден scripts/pve/setup/configure-pve.sh"
+    revision="$(git_bootstrap -C "$TEMP_REPO" rev-parse HEAD)"
 
-    log "Передача управления PVE Configuration"
+    log "Передача управления PVE Configuration revision=${revision}"
     PVE_BOOTSTRAP_TEMP_DIR="$BOOTSTRAP_TEMP_DIR" \
     PVE_BOOTSTRAP_KEY_FILE="$BOOTSTRAP_KEY_FILE" \
     PVE_BOOTSTRAP_KNOWN_HOSTS="$BOOTSTRAP_KNOWN_HOSTS" \
+    PVE_CONFIGURATION_SOURCE_REVISION="$revision" \
         bash "$configure" "${FORWARD_ARGS[@]}"
 }
 
 permanent_git() {
     runuser -u "$DEPLOY_USER" -- \
         env GIT_SSH_COMMAND="ssh -F ${PERMANENT_SSH_CONFIG}" git "$@"
+}
+
+permanent_runtime_ready_for_refresh() {
+    id "$DEPLOY_USER" >/dev/null 2>&1 \
+        && [[ -f "$PERMANENT_KEY_FILE" ]] \
+        && [[ -f "$PERMANENT_KNOWN_HOSTS" ]] \
+        && [[ -f "$PERMANENT_SSH_CONFIG" ]] \
+        && [[ -d "$PERMANENT_REPO/.git" ]]
 }
 
 refresh_permanent_repo_and_handoff() {
@@ -267,7 +278,7 @@ refresh_permanent_repo_and_handoff() {
     check_github_connectivity
 
     id "$DEPLOY_USER" >/dev/null 2>&1 \
-        || die "Bootstrap marker существует, но Linux-пользователь ${DEPLOY_USER} отсутствует. Восстановите PVE Configuration runtime."
+        || die "Linux-пользователь ${DEPLOY_USER} отсутствует. Восстановите PVE Configuration runtime."
     [[ -f "$PERMANENT_KEY_FILE" ]] || die "Постоянный Deploy Key ${PERMANENT_KEY_FILE} отсутствует. Автоматическая ротация запрещена."
     [[ -f "$PERMANENT_KNOWN_HOSTS" ]] || die "Отсутствует ${PERMANENT_KNOWN_HOSTS}. Восстановите canonical SSH runtime."
     [[ -f "$PERMANENT_SSH_CONFIG" ]] || die "Отсутствует ${PERMANENT_SSH_CONFIG}. Восстановите canonical SSH runtime."
@@ -295,8 +306,9 @@ refresh_permanent_repo_and_handoff() {
     ok "Canonical private repo обновлён: ${revision}"
     [[ -n "$configuration_version" ]] && ok "Будет запущена PVE Configuration version=${configuration_version}"
 
-    log "Запуск актуальной PVE Configuration"
-    bash "$PVE_CONFIGURATION_CANONICAL" "${FORWARD_ARGS[@]}"
+    log "Запуск актуальной PVE Configuration revision=${revision}"
+    PVE_CONFIGURATION_SOURCE_REVISION="$revision" \
+        bash "$PVE_CONFIGURATION_CANONICAL" "${FORWARD_ARGS[@]}"
 }
 
 write_complete_marker() {
@@ -315,19 +327,25 @@ EOF_MARKER
     chmod 0600 "$COMPLETE_MARKER"
 }
 
-cleanup_first_bootstrap() {
+finalize_bootstrap() {
     local revision
-    revision="$(git -C "$TEMP_REPO" rev-parse HEAD 2>/dev/null || true)"
     [[ -d "$PERMANENT_STATE_DIR" ]] \
         || die "PVE Configuration завершилась, но постоянный state-каталог ${PERMANENT_STATE_DIR} не найден; temporary bootstrap сохранён для диагностики"
+    permanent_runtime_ready_for_refresh \
+        || die "PVE Configuration завершилась, но canonical permanent runtime неполон; temporary bootstrap сохранён для диагностики"
+
+    revision="$(permanent_git -C "$PERMANENT_REPO" rev-parse HEAD 2>/dev/null || true)"
+    [[ "$revision" =~ ^[0-9a-f]{40}$ ]] \
+        || die "Не удалось определить final revision canonical private checkout"
 
     rm -rf "$BOOTSTRAP_TEMP_DIR"
     [[ ! -e "$BOOTSTRAP_TEMP_DIR" ]] || die "Не удалось полностью удалить temporary bootstrap ${BOOTSTRAP_TEMP_DIR}"
     write_complete_marker "$revision"
-    ok "Public Bootstrap завершён; временный Deploy Key и temporary checkout удалены"
+    ok "Public Bootstrap завершён; temporary runtime удалён, marker записан для revision ${revision}"
 }
 
 main() {
+    local revision
     acquire_bootstrap_lock
 
     if [[ -f "$COMPLETE_MARKER" ]]; then
@@ -339,8 +357,16 @@ main() {
         exit 0
     fi
 
+    if permanent_runtime_ready_for_refresh; then
+        info "Bootstrap marker отсутствует, но canonical runtime уже готов. Продолжается незавершённый первый запуск без ротации credentials."
+        refresh_permanent_repo_and_handoff
+        finalize_bootstrap
+        printf '\n%s%sPUBLIC BOOTSTRAP УСПЕШНО ВОЗОБНОВЛЁН И ЗАВЕРШЁН%s\n' "$C_BOLD" "$C_GREEN" "$C_RESET"
+        exit 0
+    fi
+
     if [[ -d "$PERMANENT_REPO/.git" || -f "$PERMANENT_KEY_FILE" ]]; then
-        die "Marker ${COMPLETE_MARKER} отсутствует, но permanent runtime уже существует. Для нового проекта это считается несогласованным test-state; очистите тестовый runtime и выполните чистый Public Bootstrap."
+        info "Обнаружен частично созданный permanent runtime. Public Bootstrap продолжит первый запуск и не будет удалять или ротировать существующие credentials."
     fi
 
     prepare_bootstrap_temp_dir
@@ -350,7 +376,7 @@ main() {
     ensure_private_repo_authorized
     sync_temporary_private_repo
     handoff_to_pve_configuration
-    cleanup_first_bootstrap
+    finalize_bootstrap
 
     printf '\n%s%sPUBLIC BOOTSTRAP УСПЕШНО ЗАВЕРШЁН%s\n' "$C_BOLD" "$C_GREEN" "$C_RESET"
     printf 'Дальнейшее состояние PVE поддерживает private scripts/pve/setup/configure-pve.sh.\n'
