@@ -10,11 +10,66 @@
 curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/main/init-pve.sh | bash
 ```
 
-Если нужно дополнительно передать private Stage 1 запрос на `apt full-upgrade`:
+Это **обычный рекомендуемый запуск**. Он обновляет private checkout, запускает актуальную private Stage 1 и приводит проектную конфигурацию PVE к ожидаемому состоянию, но **не выполняет полный `apt full-upgrade` системы**.
+
+## Что означает `--update-system`
+
+Параметр `--update-system` нужен только тогда, когда вместе с обычным bootstrap нужно дополнительно выполнить **полное обновление пакетов самого Proxmox VE / Debian**.
+
+Команда:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/main/init-pve.sh | bash -s -- --update-system
 ```
+
+означает:
+
+```text
+сначала выполнить обычный bootstrap / handoff
+→ обновить private repo
+→ запустить актуальную private Stage 1
+→ выполнить обычные проверки и настройку проекта
+→ дополнительно выполнить apt full-upgrade
+```
+
+Без `--update-system` Stage 1 всё равно может выполнять `apt update` и устанавливать отсутствующие пакеты, необходимые самому проекту, но **не обновляет без необходимости весь установленный набор пакетов системы**.
+
+Иными словами:
+
+```text
+обычный запуск
+→ обновить bootstrap-код и конфигурацию инфраструктуры
+
+--update-system
+→ сделать всё то же самое
++ полностью обновить пакеты Proxmox/Debian
+```
+
+### Когда использовать обычный запуск
+
+Используйте обычную команду в большинстве случаев:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/main/init-pve.sh | bash
+```
+
+Например, когда нужно:
+
+- получить свежую private Stage 1;
+- применить изменения bootstrap-кода;
+- проверить/обновить PVE roles, ACL, storage, template prerequisites и другие проектные настройки;
+- повторно проверить состояние хоста;
+- продолжить настройку после изменений в private repo.
+
+### Когда использовать `--update-system`
+
+Используйте вариант с `--update-system`, когда вы **осознанно хотите обновить сам Proxmox VE / Debian и все доступные системные пакеты**:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/main/init-pve.sh | bash -s -- --update-system
+```
+
+Для обычного применения изменений проекта этот параметр **не требуется**.
 
 Активная точка входа:
 
@@ -72,13 +127,13 @@ Private Stage 1:
 /var/lib/proxmox-deployer/repo/scripts/pve/bootstrap/init-pve.sh
 ```
 
-То есть штатный повторный запуск теперь снова выполняется той же короткой командой:
+Штатный повторный запуск:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/main/init-pve.sh | bash
 ```
 
-а полный system upgrade:
+Повторный запуск с полным system upgrade:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/main/init-pve.sh | bash -s -- --update-system
