@@ -52,6 +52,60 @@ info() { printf '%s%s[ИНФО]%s %s\n' "$C_BOLD" "$C_CYAN" "$C_RESET" "$*"; }
 warn() { printf '%s%s[ПРЕДУПРЕЖДЕНИЕ]%s %s\n' "$C_BOLD" "$C_YELLOW" "$C_RESET" "$*" >&2; }
 die()  { printf '\n%s%sОШИБКА:%s %s\n' "$C_BOLD" "$C_RED" "$C_RESET" "$*" >&2; exit 1; }
 
+bootstrap_banner_border() {
+    local left=$1 right=$2 rule=''
+    printf -v rule '%*s' 68 ''
+    rule=${rule// /─}
+    printf '%s%s%s\n' "$left" "$rule" "$right"
+}
+
+bootstrap_banner_line() {
+    local text=$1 width=66 pad=''
+    local LC_ALL=C.UTF-8
+    if (( ${#text} > width )); then
+        printf '│ %s │\n' "$text"
+        return
+    fi
+    printf -v pad '%*s' "$((width - ${#text}))" ''
+    printf '│ %s%s │\n' "$text" "$pad"
+}
+
+bootstrap_mode() {
+    printf '%s%s[РЕЖИМ]%s %s\n' "$C_BOLD" "$C_MAGENTA" "$C_RESET" "$*"
+}
+
+show_bootstrap_banner() {
+    local arg
+    printf '\n%s%s' "$C_BOLD" "$C_CYAN"
+    bootstrap_banner_border '┌' '┐'
+    bootstrap_banner_line 'Proxmox Project — Public Bootstrap'
+    bootstrap_banner_line ''
+    bootstrap_banner_line 'Подготавливает host, обновляет root-trusted private repo'
+    bootstrap_banner_line 'и запускает PVE Configuration.'
+    bootstrap_banner_line ''
+    bootstrap_banner_line "Public Bootstrap: v${PUBLIC_BOOTSTRAP_VERSION}"
+    bootstrap_banner_border '└' '┘'
+    printf '%s' "$C_RESET"
+
+    for arg in "${FORWARD_ARGS[@]}"; do
+        case "$arg" in
+            --smoke-test-template)
+                bootstrap_mode 'Full Clone smoke-test template 9000 через временную VM 9099'
+                ;;
+            --update-system)
+                bootstrap_mode 'Включено полное обновление Proxmox/Debian'
+                ;;
+        esac
+    done
+}
+
+show_handoff_banner() {
+    printf '\n%s%s%s\n' "$C_BOLD" "$C_CYAN" '════════════════════════════════════════════════════════════════════'
+    printf ' Public Bootstrap завершил подготовку.\n'
+    printf ' Передача управления PVE Configuration...\n'
+    printf '%s%s\n' '════════════════════════════════════════════════════════════════════' "$C_RESET"
+}
+
 usage() {
     cat <<'USAGE'
 Использование:
@@ -92,6 +146,7 @@ done
 [[ $EUID -eq 0 ]] || die "Запустите скрипт от root на хосте Proxmox"
 command -v pveversion >/dev/null 2>&1 || die "Команда pveversion не найдена: этот скрипт нужно запускать на Proxmox VE"
 pveversion >/dev/null
+show_bootstrap_banner
 ok "Proxmox VE обнаружен"
 
 acquire_bootstrap_lock() {
@@ -259,7 +314,8 @@ handoff_to_pve_configuration() {
     [[ -f "$configure" ]] || die "В private repo не найден scripts/pve/setup/configure-pve.sh"
     revision="$(git_bootstrap -C "$TEMP_REPO" rev-parse HEAD)"
 
-    log "Передача управления PVE Configuration revision=${revision}"
+    show_handoff_banner
+    info "PVE Configuration revision=${revision}"
     PVE_BOOTSTRAP_TEMP_DIR="$BOOTSTRAP_TEMP_DIR" \
     PVE_BOOTSTRAP_KEY_FILE="$BOOTSTRAP_KEY_FILE" \
     PVE_BOOTSTRAP_KNOWN_HOSTS="$BOOTSTRAP_KNOWN_HOSTS" \
@@ -397,7 +453,8 @@ refresh_permanent_repo_and_handoff() {
     ok "Canonical private repo обновлён: ${revision}"
     [[ -n "$configuration_version" ]] && ok "Будет запущена PVE Configuration version=${configuration_version}"
 
-    log "Запуск актуальной PVE Configuration revision=${revision}"
+    show_handoff_banner
+    info "PVE Configuration revision=${revision}"
     PVE_CONFIGURATION_SOURCE_REVISION="$revision" \
     PVE_ORCHESTRATION_LOCK_HELD=1 \
         bash "$PVE_CONFIGURATION_CANONICAL" "${FORWARD_ARGS[@]}"
