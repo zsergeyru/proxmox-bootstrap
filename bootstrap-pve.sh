@@ -8,7 +8,7 @@ set -Eeuo pipefail
 # управление PVE Configuration. Повторный запуск обновляет canonical private
 # checkout и снова запускает актуальную PVE Configuration.
 
-PUBLIC_BOOTSTRAP_VERSION=9
+PUBLIC_BOOTSTRAP_VERSION=10
 
 PRIVATE_REPO="git@github.com:zsergeyru/proxmox.git"
 PRIVATE_BRANCH="main"
@@ -21,9 +21,10 @@ BOOTSTRAP_KNOWN_HOSTS="${BOOTSTRAP_TEMP_DIR}/known_hosts"
 BOOTSTRAP_SSH_CONFIG="${BOOTSTRAP_TEMP_DIR}/ssh_config"
 TEMP_REPO="${BOOTSTRAP_TEMP_DIR}/private-repo"
 
-PERMANENT_STATE_DIR="/var/lib/proxmox-deployer/state"
+PERMANENT_RUNTIME_DIR="/var/lib/proxmox-deployer"
+PERMANENT_STATE_DIR="${PERMANENT_RUNTIME_DIR}/state"
 COMPLETE_MARKER="${PERMANENT_STATE_DIR}/bootstrap-complete"
-PERMANENT_REPO="/var/lib/proxmox-deployer/repo"
+PERMANENT_REPO="${PERMANENT_RUNTIME_DIR}/repo"
 PERMANENT_SSH_DIR="/etc/proxmox-deployer/ssh"
 PERMANENT_KEY_FILE="${PERMANENT_SSH_DIR}/github_proxmox_repo_ed25519"
 PERMANENT_KNOWN_HOSTS="${PERMANENT_SSH_DIR}/known_hosts"
@@ -64,8 +65,8 @@ Public Bootstrap — публичная точка входа проекта Pro
   - запускает scripts/pve/setup/configure-pve.sh.
 
 Повторный запуск или продолжение незавершённого первого запуска:
-  - использует постоянный read-only Deploy Key, если permanent runtime уже готов;
-  - обновляет /var/lib/proxmox-deployer/repo;
+  - использует постоянный root-only read-only Deploy Key, если permanent runtime уже готов;
+  - обновляет root-owned /var/lib/proxmox-deployer/repo;
   - запускает актуальную PVE Configuration.
 
 Public Bootstrap и PVE Configuration используют одну orchestration lock, поэтому
@@ -105,7 +106,7 @@ ensure_minimal_packages() {
     local packages=(git openssh-client curl jq ca-certificates util-linux)
     local missing=0 cmd
 
-    for cmd in git ssh ssh-keygen curl jq runuser; do
+    for cmd in git ssh ssh-keygen curl jq; do
         command -v "$cmd" >/dev/null 2>&1 || missing=1
     done
 
@@ -122,7 +123,7 @@ ensure_minimal_packages() {
             || die "Не удалось установить минимальные пакеты. Исправьте доступность APT-репозиториев и повторите запуск."
     fi
 
-    for cmd in git ssh ssh-keygen curl jq runuser; do
+    for cmd in git ssh ssh-keygen curl jq; do
         command -v "$cmd" >/dev/null 2>&1 || die "После установки не найдена обязательная команда: $cmd"
     done
     ok "Минимальный Git/SSH-набор установлен"
@@ -265,9 +266,48 @@ handoff_to_pve_configuration() {
         bash "$configure" "${FORWARD_ARGS[@]}"
 }
 
+prepare_root_owned_permanent_git_runtime() {
+    log "Миграция canonical source в root trust boundary"
+
+    install -d -o root -g "$DEPLOY_USER" -m 0750 "$PERMANENT_RUNTIME_DIR"
+    install -d -o root -g "$DEPLOY_USER" -m 0750 "$PERMANENT_SSH_DIR"
+
+    chown root:root "$PERMANENT_KEY_FILE"
+    chmod 0600 "$PERMANENT_KEY_FILE"
+
+    local tmp_hosts tmp_config
+    tmp_hosts="$(mktemp "${PERMANENT_SSH_DIR}/.known-hosts.XXXXXX")"
+    curl -fsSL --connect-timeout 10 --max-time 20 https://api.github.com/meta \
+        | jq -r '.ssh_keys[] | "github.com " + .' >"$tmp_hosts"
+    [[ -s "$tmp_hosts" ]] || { rm -f "$tmp_hosts"; die "Не удалось обновить SSH host keys GitHub при миграции trust boundary"; }
+    install -o root -g root -m 0644 "$tmp_hosts" "$PERMANENT_KNOWN_HOSTS"
+    rm -f "$tmp_hosts"
+
+    tmp_config="$(mktemp "${PERMANENT_SSH_DIR}/.config.XXXXXX")"
+    cat >"$tmp_config" <<EOF_SSH
+Host github.com
+    HostName github.com
+    User git
+    IdentityFile ${PERMANENT_KEY_FILE}
+    IdentitiesOnly yes
+    UserKnownHostsFile ${PERMANENT_KNOWN_HOSTS}
+    StrictHostKeyChecking yes
+    BatchMode yes
+    ConnectTimeout 10
+    ServerAliveInterval 15
+    ServerAliveCountMax 2
+EOF_SSH
+    install -o root -g root -m 0600 "$tmp_config" "$PERMANENT_SSH_CONFIG"
+    rm -f "$tmp_config"
+
+    chown -R root:root "$PERMANENT_REPO"
+    chmod -R go-w "$PERMANENT_REPO"
+    ok "Canonical repo и GitHub credential переведены под root; pvedeploy сохраняет только read access через parent directory"
+}
+
 permanent_git() {
-    runuser -u "$DEPLOY_USER" -- \
-        env GIT_SSH_COMMAND="ssh -F ${PERMANENT_SSH_CONFIG}" git "$@"
+    env GIT_SSH_COMMAND="ssh -F ${PERMANENT_SSH_CONFIG}" \
+        git -c "safe.directory=${PERMANENT_REPO}" "$@"
 }
 
 permanent_runtime_ready_for_refresh() {
@@ -276,6 +316,29 @@ permanent_runtime_ready_for_refresh() {
         && [[ -f "$PERMANENT_KNOWN_HOSTS" ]] \
         && [[ -f "$PERMANENT_SSH_CONFIG" ]] \
         && [[ -d "$PERMANENT_REPO/.git" ]]
+}
+
+assert_permanent_source_trust() {
+    local parent_owner parent_mode violation key_owner key_mode config_owner config_mode
+
+    parent_owner="$(stat -c '%U:%G' "$PERMANENT_RUNTIME_DIR" 2>/dev/null || true)"
+    parent_mode="$(stat -c '%a' "$PERMANENT_RUNTIME_DIR" 2>/dev/null || true)"
+    [[ "$parent_owner" == "root:${DEPLOY_USER}" && "$parent_mode" == "750" ]] \
+        || die "${PERMANENT_RUNTIME_DIR} должен быть root:${DEPLOY_USER} 0750, обнаружено ${parent_owner:-?} ${parent_mode:-?}"
+
+    key_owner="$(stat -c '%U:%G' "$PERMANENT_KEY_FILE" 2>/dev/null || true)"
+    key_mode="$(stat -c '%a' "$PERMANENT_KEY_FILE" 2>/dev/null || true)"
+    [[ "$key_owner" == "root:root" && "$key_mode" == "600" ]] \
+        || die "Canonical GitHub private key должен быть root:root 0600, обнаружено ${key_owner:-?} ${key_mode:-?}"
+
+    config_owner="$(stat -c '%U:%G' "$PERMANENT_SSH_CONFIG" 2>/dev/null || true)"
+    config_mode="$(stat -c '%a' "$PERMANENT_SSH_CONFIG" 2>/dev/null || true)"
+    [[ "$config_owner" == "root:root" && "$config_mode" == "600" ]] \
+        || die "Canonical Git SSH config должен быть root:root 0600, обнаружено ${config_owner:-?} ${config_mode:-?}"
+
+    violation="$(find "$PERMANENT_REPO" -xdev \( -type f -o -type d \) \( ! -uid 0 -o -perm /022 \) -print -quit 2>/dev/null || true)"
+    [[ -z "$violation" ]] \
+        || die "Canonical checkout не является root-trusted: '${violation}' не root-owned или доступен на запись группе/остальным"
 }
 
 assert_permanent_repo_clean() {
@@ -287,7 +350,7 @@ assert_permanent_repo_clean() {
 }
 
 refresh_permanent_repo_and_handoff() {
-    log "Обновление canonical private checkout"
+    log "Обновление root-trusted canonical private checkout"
 
     ensure_minimal_packages
     check_github_connectivity
@@ -299,6 +362,11 @@ refresh_permanent_repo_and_handoff() {
     [[ -f "$PERMANENT_SSH_CONFIG" ]] || die "Отсутствует ${PERMANENT_SSH_CONFIG}. Восстановите canonical SSH runtime."
     [[ -d "$PERMANENT_REPO/.git" ]] || die "Canonical checkout ${PERMANENT_REPO} отсутствует или не является Git repository."
 
+    # v10 one-time migration: old installations had repo/credential owned by
+    # pvedeploy. Ownership is hardened before any canonical Git command as root.
+    prepare_root_owned_permanent_git_runtime
+    assert_permanent_source_trust
+
     local origin_url refs revision configuration_version
     origin_url="$(permanent_git -C "$PERMANENT_REPO" remote get-url origin 2>/dev/null || true)"
     [[ "$origin_url" == "$PRIVATE_REPO" ]] \
@@ -307,7 +375,7 @@ refresh_permanent_repo_and_handoff() {
     assert_permanent_repo_clean
 
     refs="$(permanent_git ls-remote "$PRIVATE_REPO" "refs/heads/${PRIVATE_BRANCH}" 2>/dev/null || true)"
-    [[ -n "$refs" ]] || die "Постоянный Deploy Key не даёт read-only доступ к ${PRIVATE_REPO}/${PRIVATE_BRANCH}."
+    [[ -n "$refs" ]] || die "Постоянный root-only Deploy Key не даёт read-only доступ к ${PRIVATE_REPO}/${PRIVATE_BRANCH}."
 
     permanent_git -C "$PERMANENT_REPO" fetch --depth 1 origin "$PRIVATE_BRANCH" \
         || die "Не удалось получить актуальную ветку ${PRIVATE_BRANCH} private repo"
@@ -315,6 +383,9 @@ refresh_permanent_repo_and_handoff() {
         || die "Не удалось переключить canonical checkout на полученную ${PRIVATE_BRANCH}"
     permanent_git -C "$PERMANENT_REPO" clean -ffd \
         || die "Не удалось очистить canonical checkout от неотслеживаемых файлов"
+    chown -R root:root "$PERMANENT_REPO"
+    chmod -R go-w "$PERMANENT_REPO"
+    assert_permanent_source_trust
     assert_permanent_repo_clean
 
     revision="$(permanent_git -C "$PERMANENT_REPO" rev-parse HEAD)"
@@ -353,6 +424,7 @@ finalize_bootstrap() {
     permanent_runtime_ready_for_refresh \
         || die "PVE Configuration завершилась, но canonical permanent runtime неполон; temporary bootstrap сохранён для диагностики"
 
+    assert_permanent_source_trust
     revision="$(permanent_git -C "$PERMANENT_REPO" rev-parse HEAD 2>/dev/null || true)"
     [[ "$revision" =~ ^[0-9a-f]{40}$ ]] \
         || die "Не удалось определить final revision canonical private checkout"

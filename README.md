@@ -5,7 +5,7 @@
 Текущая версия Public Bootstrap:
 
 ```text
-PUBLIC_BOOTSTRAP_VERSION=9
+PUBLIC_BOOTSTRAP_VERSION=10
 ```
 
 В проекте два компонента:
@@ -16,6 +16,7 @@ bootstrap-pve.sh
 → безопасно получить или обновить private repo
 → выбрать точную Git revision
 → удерживать общую orchestration lock
+→ поддерживать root trust boundary canonical source
 → запустить PVE Configuration из этой revision
 
 PVE Configuration
@@ -70,7 +71,7 @@ root + Proxmox check
 → DNS/HTTPS GitHub check
 → temporary read-only GitHub Deploy Key
 → authorization private repo/main
-→ temporary shallow checkout
+→ temporary shallow checkout root:root
 → определить exact HEAD private repo
 → передать SHA в PVE Configuration
 → PVE Configuration создаёт permanent runtime и canonical checkout той же revision
@@ -101,6 +102,31 @@ root + Proxmox check
 
 Если runtime создан только частично, first-run path продолжается через temporary runtime. Временный checkout считается одноразовым: перед повторным handoff он переводится на свежий `FETCH_HEAD` и очищается через `git clean -ffdx`, включая ignored cache/build artifacts. Это предотвращает ложный STOP строгой source-проверки из-за `__pycache__`, `.cache` и других временных файлов. Permanent checkout такого destructive cleanup не получает.
 
+## Root trust boundary canonical source
+
+Canonical repository и Git credential являются частью root-trusted host configuration, а не рабочего пространства `pvedeploy`.
+
+Ожидаемая модель:
+
+```text
+/var/lib/proxmox-deployer
+→ root:pvedeploy 0750
+
+/var/lib/proxmox-deployer/repo
+→ root-owned tree
+→ group/other write запрещён
+
+/etc/proxmox-deployer/ssh/github_proxmox_repo_ed25519
+→ root:root 0600
+
+/etc/proxmox-deployer/ssh/config
+→ root:root 0600
+```
+
+`pvedeploy` может читать project source через parent directory, но не может менять canonical checkout, `.git` metadata или GitHub Deploy Key. Это не мешает будущему `deploy-guest` читать manifests/scripts, но не позволяет ограниченному runtime user подменить код, который позже будет исполнен `root`.
+
+Public Bootstrap v10 автоматически переводит существующий старый `pvedeploy`-owned checkout/credential в эту модель до запуска PVE Configuration. После миграции каждый handoff дополнительно проверяет ownership и отсутствие group/other write.
+
 ## Повторный запуск после завершённого bootstrap
 
 При наличии:
@@ -122,6 +148,7 @@ pvedeploy
 Перед любым reset Public Bootstrap проверяет:
 
 ```text
+root trust boundary canonical source
 origin == git@github.com:zsergeyru/proxmox.git
 canonical worktree полностью clean
 ```
@@ -133,11 +160,12 @@ Clean означает отсутствие tracked, staged, untracked и ignore
 Для clean checkout алгоритм:
 
 ```text
-проверить read-only доступ к zsergeyru/proxmox/main
-→ fetch main
+проверить root ownership / write boundary
+→ проверить read-only доступ к zsergeyru/proxmox/main
+→ fetch main от root
 → reset --hard FETCH_HEAD
 → clean -ffd
-→ повторно подтвердить clean state
+→ повторно подтвердить trust boundary + clean state
 → определить SHA
 → запустить PVE Configuration с PVE_CONFIGURATION_SOURCE_REVISION=<SHA>
 ```
@@ -153,7 +181,7 @@ PVE_CONFIGURATION_SOURCE_REVISION=<40-char SHA>
 PVE_ORCHESTRATION_LOCK_HELD=1
 ```
 
-PVE Configuration до загрузки своих модулей проверяет, что source checkout имеет именно этот HEAD и не содержит local drift. Canonical checkout после sync также обязан совпасть с source SHA.
+PVE Configuration до загрузки своих модулей проверяет, что source checkout имеет именно этот HEAD, не содержит local drift и является root-owned/non-writable для `pvedeploy` или других non-root users. Canonical checkout после sync также обязан совпасть с source SHA.
 
 Если `main` изменится между temporary checkout и canonical clone/fetch, текущий run остановится вместо смешивания commits.
 
