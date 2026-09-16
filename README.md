@@ -1,119 +1,120 @@
 # Proxmox Bootstrap
 
-Публичный репозиторий содержит минимальную публичную точку входа для bootstrap и последующего запуска private Stage 1 на Proxmox VE.
+Публичный репозиторий содержит минимальную точку входа для первоначального подключения Proxmox VE к приватному инфраструктурному репозиторию и для последующих повторных запусков конфигурации.
+
+В проекте используются два понятных компонента:
+
+```text
+Public Bootstrap
+bootstrap-pve.sh
+→ получить или обновить private repo
+→ запустить PVE Configuration
+
+PVE Configuration
+scripts/pve/setup/configure-pve.sh
+→ привести Proxmox VE к ожидаемому состоянию проекта
+```
+
+Термины `Stage 0` и `Stage 1` больше не используются как основные названия.
 
 ## Основная команда
 
 Войдите в shell Proxmox под `root` и используйте одну и ту же команду как при первоначальной установке, так и при последующих запусках:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/main/init-pve.sh | bash
+curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/main/bootstrap-pve.sh | bash
 ```
 
-Это **обычный рекомендуемый запуск**. Он обновляет private checkout, запускает актуальную private Stage 1 и приводит проектную конфигурацию PVE к ожидаемому состоянию, но **не выполняет полный `apt full-upgrade` системы**.
+Это основной рекомендуемый запуск. Он:
+
+```text
+проверяет Public Bootstrap runtime
+→ получает или обновляет zsergeyru/proxmox
+→ запускает актуальную PVE Configuration
+→ проверяет и применяет проектную конфигурацию PVE
+```
+
+Обычный запуск **не выполняет полный `apt full-upgrade` системы**.
 
 ## Что означает `--update-system`
 
-Параметр `--update-system` нужен только тогда, когда вместе с обычным bootstrap нужно дополнительно выполнить **полное обновление пакетов самого Proxmox VE / Debian**.
-
-Команда:
+`--update-system` нужен только тогда, когда вместе с обычной PVE Configuration нужно дополнительно выполнить полное обновление пакетов самого Proxmox VE / Debian.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/main/init-pve.sh | bash -s -- --update-system
+curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/main/bootstrap-pve.sh | bash -s -- --update-system
 ```
 
-означает:
+Это означает:
 
 ```text
-сначала выполнить обычный bootstrap / handoff
+обычный Public Bootstrap
 → обновить private repo
-→ запустить актуальную private Stage 1
+→ запустить PVE Configuration
 → выполнить обычные проверки и настройку проекта
 → дополнительно выполнить apt full-upgrade
 ```
 
-Без `--update-system` Stage 1 всё равно может выполнять `apt update` и устанавливать отсутствующие пакеты, необходимые самому проекту, но **не обновляет без необходимости весь установленный набор пакетов системы**.
-
-Иными словами:
-
-```text
-обычный запуск
-→ обновить bootstrap-код и конфигурацию инфраструктуры
-
---update-system
-→ сделать всё то же самое
-+ полностью обновить пакеты Proxmox/Debian
-```
+Без `--update-system` PVE Configuration всё равно может выполнять `apt update` и устанавливать отсутствующие пакеты, необходимые проекту, но не обновляет без необходимости весь установленный набор системных пакетов.
 
 ### Когда использовать обычный запуск
 
 Используйте обычную команду в большинстве случаев:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/main/init-pve.sh | bash
+curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/main/bootstrap-pve.sh | bash
 ```
 
-Например, когда нужно:
-
-- получить свежую private Stage 1;
-- применить изменения bootstrap-кода;
-- проверить/обновить PVE roles, ACL, storage, template prerequisites и другие проектные настройки;
-- повторно проверить состояние хоста;
-- продолжить настройку после изменений в private repo.
+Например, когда нужно получить свежую конфигурацию проекта, применить изменения ролей/ACL/storage/template prerequisites или повторно проверить состояние хоста.
 
 ### Когда использовать `--update-system`
 
-Используйте вариант с `--update-system`, когда вы **осознанно хотите обновить сам Proxmox VE / Debian и все доступные системные пакеты**:
+Используйте этот вариант только когда осознанно хотите обновить сам Proxmox VE / Debian и все доступные системные пакеты:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/main/init-pve.sh | bash -s -- --update-system
+curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/main/bootstrap-pve.sh | bash -s -- --update-system
 ```
 
-Для обычного применения изменений проекта этот параметр **не требуется**.
+## Первый запуск: Public Bootstrap
 
-Активная точка входа:
-
-```text
-init-pve.sh
-```
-
-## Первый запуск
-
-При отсутствии marker завершённой Stage 0 скрипт выполняет zero-day bootstrap:
+Если постоянный marker ещё отсутствует, `bootstrap-pve.sh` выполняет первоначальное подключение хоста:
 
 ```text
 проверяет Proxmox и минимальный Git/SSH runtime
 → создаёт временный read-only GitHub Deploy Key
 → если ключ ещё не авторизован, показывает public key и инструкцию
-→ ждёт нажатия Enter после добавления ключа в GitHub Deploy keys
-→ повторно проверяет доступ именно к ветке main
-→ делает shallow clone private repo глубиной 1 commit
-→ запускает private Stage 1
-→ private Stage 1 создаёт постоянный Deploy Key/runtime и canonical checkout
-→ после успешного handoff public bootstrap удаляет /var/lib/proxmox-bootstrap целиком
-→ создаёт постоянный stage0-complete marker
+→ ждёт подтверждения после добавления Deploy Key в GitHub
+→ проверяет доступ к zsergeyru/proxmox/main
+→ делает temporary shallow clone private repo
+→ запускает scripts/pve/setup/configure-pve.sh
+→ PVE Configuration создаёт постоянный Deploy Key/runtime и canonical checkout
+→ Public Bootstrap удаляет /var/lib/proxmox-bootstrap
+→ создаёт /var/lib/proxmox-deployer/state/bootstrap-complete
 ```
 
-Если после Enter доступ к private repo не появился, выполнение завершается с явной ошибкой. При повторном незавершённом Stage 0 запуске существующий временный private key используется повторно, а public часть восстанавливается из него.
+Если Deploy Key не авторизован, выполнение завершается с явной ошибкой. При повторном незавершённом Public Bootstrap существующий временный private key используется повторно.
 
-## Повторный запуск после завершённой Stage 0
+## Повторный запуск
 
-После появления постоянного marker public bootstrap **не создаёт новый Deploy Key и не повторяет zero-day setup**.
+После успешного первоначального bootstrap новая временная identity не создаётся.
 
-Вместо этого та же public команда выполняет безопасный updater/handoff:
+Та же команда:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/main/bootstrap-pve.sh | bash
+```
+
+выполняет:
 
 ```text
-проверяет постоянный Linux user pvedeploy
-→ проверяет canonical read-only Deploy Key и SSH runtime
-→ проверяет origin /var/lib/proxmox-deployer/repo
-→ подтверждает read-only доступ к zsergeyru/proxmox/main
-→ fetch main
-→ reset canonical checkout на полученный commit
-→ clean project checkout
-→ запускает уже обновлённый scripts/pve/bootstrap/init-pve.sh
+проверить постоянный Linux user pvedeploy
+→ проверить canonical read-only Deploy Key и SSH runtime
+→ проверить origin /var/lib/proxmox-deployer/repo
+→ fetch zsergeyru/proxmox/main
+→ обновить canonical checkout
+→ запустить scripts/pve/setup/configure-pve.sh
 ```
 
-Private key не ротируется автоматически. Если постоянный credential, SSH config или canonical checkout отсутствует/повреждён, public bootstrap останавливается и требует явного recovery вместо создания нового credential.
+Private key не ротируется автоматически. Если постоянный credential, SSH config или canonical checkout отсутствует/повреждён, Public Bootstrap останавливается и требует явного recovery.
 
 Постоянный private checkout:
 
@@ -121,24 +122,34 @@ Private key не ротируется автоматически. Если по�
 /var/lib/proxmox-deployer/repo
 ```
 
-Private Stage 1:
+Каноническая PVE Configuration:
 
 ```text
-/var/lib/proxmox-deployer/repo/scripts/pve/bootstrap/init-pve.sh
+/var/lib/proxmox-deployer/repo/scripts/pve/setup/configure-pve.sh
 ```
 
-Штатный повторный запуск:
+## Совместимость со старыми командами
+
+Старый public путь временно сохранён:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/main/init-pve.sh | bash
 ```
 
-Повторный запуск с полным system upgrade:
+Он показывает предупреждение и загружает `bootstrap-pve.sh`. Для новых инструкций и автоматизации следует использовать только `bootstrap-pve.sh`.
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/main/init-pve.sh | bash -s -- --update-system
+Существующий legacy marker:
+
+```text
+/var/lib/proxmox-deployer/state/stage0-complete
 ```
 
-В этом репозитории не хранятся внутренняя конфигурация Proxmox, роли, ACL, API-токены, планы VM/LXC, шаблоны, конфигурация AI или другие детали приватной инфраструктуры.
+также распознаётся. После успешного повторного запуска создаётся новый marker:
+
+```text
+/var/lib/proxmox-deployer/state/bootstrap-complete
+```
+
+В этом публичном репозитории не хранятся внутренняя конфигурация Proxmox, роли, ACL, API-токены, планы VM/LXC, шаблоны, конфигурация AI или другие детали приватной инфраструктуры.
 
 Секреты, private keys, passwords и рабочие credentials в Git не сохраняются.
