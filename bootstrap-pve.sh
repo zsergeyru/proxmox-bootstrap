@@ -8,7 +8,7 @@ set -Eeuo pipefail
 # управление PVE Configuration. Повторный запуск обновляет canonical private
 # checkout и снова запускает актуальную PVE Configuration.
 
-PUBLIC_BOOTSTRAP_VERSION=5
+PUBLIC_BOOTSTRAP_VERSION=6
 
 PRIVATE_REPO="git@github.com:zsergeyru/proxmox.git"
 PRIVATE_BRANCH="main"
@@ -23,7 +23,6 @@ TEMP_REPO="${BOOTSTRAP_TEMP_DIR}/private-repo"
 
 PERMANENT_STATE_DIR="/var/lib/proxmox-deployer/state"
 COMPLETE_MARKER="${PERMANENT_STATE_DIR}/bootstrap-complete"
-LEGACY_COMPLETE_MARKER="${PERMANENT_STATE_DIR}/stage0-complete"
 PERMANENT_REPO="/var/lib/proxmox-deployer/repo"
 PERMANENT_SSH_DIR="/etc/proxmox-deployer/ssh"
 PERMANENT_KEY_FILE="${PERMANENT_SSH_DIR}/github_proxmox_repo_ed25519"
@@ -331,18 +330,17 @@ cleanup_first_bootstrap() {
 main() {
     acquire_bootstrap_lock
 
-    if [[ -f "$COMPLETE_MARKER" || -f "$LEGACY_COMPLETE_MARKER" ]]; then
-        if [[ ! -f "$COMPLETE_MARKER" && -f "$LEGACY_COMPLETE_MARKER" ]]; then
-            info "Обнаружен legacy marker stage0-complete; после успешной PVE Configuration будет создан bootstrap-complete"
-        else
-            info "Public Bootstrap уже выполнялся; будет обновлён private checkout"
-        fi
-
+    if [[ -f "$COMPLETE_MARKER" ]]; then
+        info "Public Bootstrap уже выполнялся; будет обновлён private checkout"
         refresh_permanent_repo_and_handoff
         revision="$(permanent_git -C "$PERMANENT_REPO" rev-parse HEAD 2>/dev/null || true)"
         write_complete_marker "$revision"
         printf '\n%s%sPVE CONFIGURATION УСПЕШНО ЗАВЕРШЕНА%s\n' "$C_BOLD" "$C_GREEN" "$C_RESET"
         exit 0
+    fi
+
+    if [[ -d "$PERMANENT_REPO/.git" || -f "$PERMANENT_KEY_FILE" ]]; then
+        die "Marker ${COMPLETE_MARKER} отсутствует, но permanent runtime уже существует. Для нового проекта это считается несогласованным test-state; очистите тестовый runtime и выполните чистый Public Bootstrap."
     fi
 
     prepare_bootstrap_temp_dir
