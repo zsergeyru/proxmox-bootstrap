@@ -49,10 +49,38 @@ PRIVATE_INIT_CANONICAL="${PERMANENT_REPO}/scripts/pve/bootstrap/init-pve.sh"
 
 FORWARD_ARGS=()
 
-log()  { printf '\n==> %s\n' "$*"; }
-ok()   { printf '[ОК] %s\n' "$*"; }
-warn() { printf '[ПРЕДУПРЕЖДЕНИЕ] %s\n' "$*" >&2; }
-die()  { printf '\nОШИБКА: %s\n' "$*" >&2; exit 1; }
+# Цвета включаются только для интерактивного терминала. NO_COLOR=1 отключает их.
+if [[ -t 1 && -z "${NO_COLOR:-}" && "${TERM:-dumb}" != "dumb" ]]; then
+    C_RESET=$'\033[0m'
+    C_BOLD=$'\033[1m'
+    C_BLUE=$'\033[34m'
+    C_GREEN=$'\033[32m'
+    C_YELLOW=$'\033[33m'
+    C_RED=$'\033[31m'
+    C_CYAN=$'\033[36m'
+else
+    C_RESET=""
+    C_BOLD=""
+    C_BLUE=""
+    C_GREEN=""
+    C_YELLOW=""
+    C_RED=""
+    C_CYAN=""
+fi
+
+log()      { printf '\n%b==> %s%b\n' "${C_BOLD}${C_BLUE}" "$*" "$C_RESET"; }
+ok()       { printf '%b[ОК]%b %s\n' "${C_BOLD}${C_GREEN}" "$C_RESET" "$*"; }
+info()     { printf '%b[ИНФО]%b %s\n' "${C_BOLD}${C_CYAN}" "$C_RESET" "$*"; }
+warn()     { printf '%b[ПРЕДУПРЕЖДЕНИЕ]%b %s\n' "${C_BOLD}${C_YELLOW}" "$C_RESET" "$*" >&2; }
+die()      { printf '\n%bОШИБКА:%b %s\n' "${C_BOLD}${C_RED}" "$C_RESET" "$*" >&2; exit 1; }
+headline() { printf '\n%b%s%b\n' "${C_BOLD}${C_CYAN}" "$*" "$C_RESET"; }
+
+success_banner() {
+    local text=$1
+    printf '\n%b╔════════════════════════════════════════════════════════════╗%b\n' "${C_BOLD}${C_GREEN}" "$C_RESET"
+    printf '%b  %s%b\n' "${C_BOLD}${C_GREEN}" "$text" "$C_RESET"
+    printf '%b╚════════════════════════════════════════════════════════════╝%b\n' "${C_BOLD}${C_GREEN}" "$C_RESET"
+}
 
 usage() {
     cat <<'USAGE'
@@ -224,8 +252,8 @@ private_branch_accessible() {
 }
 
 show_deploy_key_instructions() {
-    printf '\nОЖИДАНИЕ АВТОРИЗАЦИИ GITHUB\n\n'
-    printf 'Добавьте следующий публичный ключ в приватный репозиторий zsergeyru/proxmox:\n\n'
+    headline "ОЖИДАНИЕ АВТОРИЗАЦИИ GITHUB"
+    printf '\nДобавьте следующий публичный ключ в приватный репозиторий zsergeyru/proxmox:\n\n'
     cat "$KEY_PUB_FILE"
     printf '\nПуть: GitHub -> zsergeyru/proxmox -> Settings -> Deploy keys -> Add deploy key\n'
     printf 'Allow write access: ВЫКЛЮЧЕН\n'
@@ -336,7 +364,7 @@ refresh_permanent_repo_and_handoff() {
     bootstrap_version="$(sed -n 's/^BOOTSTRAP_VERSION=//p' "$PRIVATE_INIT_CANONICAL" | head -n1)"
     ok "Canonical private repo обновлён: ${revision}"
     if [[ -n "$bootstrap_version" ]]; then
-        ok "Будет запущена private Stage 1 BOOTSTRAP_VERSION=${bootstrap_version}"
+        info "Будет запущена private Stage 1 BOOTSTRAP_VERSION=${bootstrap_version}"
     fi
 
     log "Передача управления свежей private Stage 1"
@@ -376,10 +404,10 @@ main() {
     acquire_stage0_lock
 
     if [[ -f "$COMPLETE_MARKER" ]]; then
-        printf '\nStage 0 уже была успешно завершена.\n'
-        printf 'Новый public запуск обновит canonical private checkout и запустит свежую Stage 1.\n'
+        headline "Stage 0 уже была успешно завершена"
+        info "Новый public запуск обновит canonical private checkout и запустит свежую Stage 1."
         refresh_permanent_repo_and_handoff
-        printf '\nPRIVATE STAGE 1 УСПЕШНО ЗАВЕРШЕНА\n'
+        success_banner "PRIVATE STAGE 1 УСПЕШНО ЗАВЕРШЕНА"
         exit 0
     fi
 
@@ -392,9 +420,9 @@ main() {
     handoff_to_private_bootstrap
     cleanup_stage0
 
-    printf '\nПУБЛИЧНАЯ STAGE 0 УСПЕШНО ЗАВЕРШЕНА\n'
-    printf 'Дальнейший source of truth и вся логика PVE находятся в приватном zsergeyru/proxmox.\n'
-    printf 'Для последующих запусков используйте ту же public curl-команду: она обновит private main и передаст управление свежей Stage 1.\n'
+    success_banner "ПУБЛИЧНАЯ STAGE 0 УСПЕШНО ЗАВЕРШЕНА"
+    info "Дальнейший source of truth и вся логика PVE находятся в приватном zsergeyru/proxmox."
+    info "Для последующих запусков используйте ту же public curl-команду: она обновит private main и передаст управление свежей Stage 1."
 }
 
 main "$@"
