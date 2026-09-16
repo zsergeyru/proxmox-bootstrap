@@ -5,7 +5,7 @@
 Текущая версия Public Bootstrap:
 
 ```text
-PUBLIC_BOOTSTRAP_VERSION=10
+PUBLIC_BOOTSTRAP_VERSION=11
 ```
 
 В проекте два компонента:
@@ -17,6 +17,7 @@ bootstrap-pve.sh
 → выбрать точную Git revision
 → удерживать общую orchestration lock
 → поддерживать root trust boundary canonical source
+→ передать параметры запуска
 → запустить PVE Configuration из этой revision
 
 PVE Configuration
@@ -39,6 +40,16 @@ curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/main/bo
 ```bash
 curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/main/bootstrap-pve.sh | bash -s -- --update-system
 ```
+
+Для явного Full Clone smoke-test уже существующего Debian template `9000`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/main/bootstrap-pve.sh | bash -s -- --smoke-test-template
+```
+
+Параметр передаётся без изменения в private PVE Configuration. Если template `9000` только что создан текущим configuration run, smoke-test запускается автоматически и отдельный ключ не требуется.
+
+Smoke-test использует временный VMID `9099`. При успешной проверке VM штатно выключается и удаляется; при ошибке или interruption VM `9099` намеренно сохраняется для диагностики и не удаляется автоматически.
 
 ## Общая orchestration lock
 
@@ -125,7 +136,7 @@ Canonical repository и Git credential являются частью root-truste
 
 `pvedeploy` может читать project source через parent directory, но не может менять canonical checkout, `.git` metadata или GitHub Deploy Key. Это не мешает будущему `deploy-guest` читать manifests/scripts, но не позволяет ограниченному runtime user подменить код, который позже будет исполнен `root`.
 
-Public Bootstrap v10 автоматически переводит существующий старый `pvedeploy`-owned checkout/credential в эту модель до запуска PVE Configuration. После миграции каждый handoff дополнительно проверяет ownership и отсутствие group/other write.
+Public Bootstrap v10+ автоматически переводит существующий старый `pvedeploy`-owned checkout/credential в эту модель до запуска PVE Configuration. После миграции каждый handoff дополнительно проверяет ownership и отсутствие group/other write.
 
 ## Повторный запуск после завершённого bootstrap
 

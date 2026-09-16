@@ -8,7 +8,7 @@ set -Eeuo pipefail
 # управление PVE Configuration. Повторный запуск обновляет canonical private
 # checkout и снова запускает актуальную PVE Configuration.
 
-PUBLIC_BOOTSTRAP_VERSION=10
+PUBLIC_BOOTSTRAP_VERSION=11
 
 PRIVATE_REPO="git@github.com:zsergeyru/proxmox.git"
 PRIVATE_BRANCH="main"
@@ -55,7 +55,7 @@ die()  { printf '\n%s%sОШИБКА:%s %s\n' "$C_BOLD" "$C_RED" "$C_RESET" "$*" 
 usage() {
     cat <<'USAGE'
 Использование:
-  bootstrap-pve.sh [--update-system] [--help]
+  bootstrap-pve.sh [--update-system] [--smoke-test-template] [--help]
 
 Public Bootstrap — публичная точка входа проекта Proxmox.
 
@@ -73,14 +73,16 @@ Public Bootstrap и PVE Configuration используют одну orchestratio
 canonical checkout и host configuration никогда не изменяются параллельно.
 
 Параметры:
-  --update-system  дополнительно запросить apt full-upgrade Proxmox/Debian
-  -h, --help       показать эту справку
+  --update-system        дополнительно запросить apt full-upgrade Proxmox/Debian
+  --smoke-test-template  выполнить Full Clone smoke-test template 9000 через временную VM 9099
+  -h, --help             показать эту справку
 USAGE
 }
 
 while (($#)); do
     case "$1" in
         --update-system) FORWARD_ARGS+=("--update-system") ;;
+        --smoke-test-template) FORWARD_ARGS+=("--smoke-test-template") ;;
         -h|--help) usage; exit 0 ;;
         *) die "Неизвестный параметр: $1" ;;
     esac
@@ -362,7 +364,7 @@ refresh_permanent_repo_and_handoff() {
     [[ -f "$PERMANENT_SSH_CONFIG" ]] || die "Отсутствует ${PERMANENT_SSH_CONFIG}. Восстановите canonical SSH runtime."
     [[ -d "$PERMANENT_REPO/.git" ]] || die "Canonical checkout ${PERMANENT_REPO} отсутствует или не является Git repository."
 
-    # v10 one-time migration: old installations had repo/credential owned by
+    # v10+ migration: old installations had repo/credential owned by
     # pvedeploy. Ownership is hardened before any canonical Git command as root.
     prepare_root_owned_permanent_git_runtime
     assert_permanent_source_trust
