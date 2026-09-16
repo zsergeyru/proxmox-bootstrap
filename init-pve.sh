@@ -6,7 +6,7 @@ set -Eeuo pipefail
 # =============================================================================
 #
 # Этот скрипт намеренно почти ничего не знает о внутренней архитектуре PVE-проекта.
-# Его задача:
+# Его задача при первом запуске:
 #   1) обеспечить наличие Git/SSH;
 #   2) создать временный read-only GitHub Deploy Key;
 #   3) помочь человеку добавить public key в приватный zsergeyru/proxmox;
@@ -14,13 +14,18 @@ set -Eeuo pipefail
 #   5) передать управление приватному bootstrap;
 #   6) после успешного handoff удалить временную Stage 0 область целиком.
 #
+# После успешной Stage 0 этот же entrypoint используется только как безопасный
+# updater/handoff: он переиспользует постоянный read-only Deploy Key, обновляет
+# canonical private checkout и запускает уже свежую private Stage 1.
+#
 # Все роли, ACL, API-токены, pools, templates, deployer и прочая инфраструктура
 # описываются и создаются только кодом из закрытого репозитория.
 
-STAGE0_VERSION=3
+STAGE0_VERSION=4
 
 PRIVATE_REPO="git@github.com:zsergeyru/proxmox.git"
 PRIVATE_BRANCH="main"
+DEPLOY_USER="pvedeploy"
 
 # Полностью временная рабочая область zero-day bootstrap.
 STAGE0_DIR="/var/lib/proxmox-bootstrap"
@@ -30,11 +35,17 @@ KNOWN_HOSTS="${STAGE0_DIR}/known_hosts"
 SSH_CONFIG="${STAGE0_DIR}/ssh_config"
 TEMP_REPO="${STAGE0_DIR}/private-repo"
 
-# После успешного handoff marker хранится уже в постоянном state private runtime.
+# После успешного handoff marker и private checkout находятся уже в постоянной
+# структуре, созданной private Stage 1.
 PERMANENT_STATE_DIR="/var/lib/proxmox-deployer/state"
 COMPLETE_MARKER="${PERMANENT_STATE_DIR}/stage0-complete"
+PERMANENT_REPO="/var/lib/proxmox-deployer/repo"
+PERMANENT_SSH_DIR="/etc/proxmox-deployer/ssh"
+PERMANENT_KEY_FILE="${PERMANENT_SSH_DIR}/github_proxmox_repo_ed25519"
+PERMANENT_KNOWN_HOSTS="${PERMANENT_SSH_DIR}/known_hosts"
+PERMANENT_SSH_CONFIG="${PERMANENT_SSH_DIR}/config"
 LOCK_FILE="/run/lock/proxmox-bootstrap-stage0.lock"
-PRIVATE_INIT_CANONICAL="/var/lib/proxmox-deployer/repo/scripts/pve/bootstrap/init-pve.sh"
+PRIVATE_INIT_CANONICAL="${PERMANENT_REPO}/scripts/pve/bootstrap/init-pve.sh"
 
 FORWARD_ARGS=()
 
@@ -48,15 +59,19 @@ usage() {
 Использование:
   init-pve.sh [--update-system] [--help]
 
-Публичная нулевая стадия инициализации Proxmox VE.
-Она подготавливает временный read-only Deploy Key для приватного
-zsergeyru/proxmox и после авторизации передаёт управление приватному bootstrap.
+Публичная точка входа bootstrap Proxmox VE.
 
-Если Deploy Key ещё не добавлен в GitHub, скрипт покажет public key и инструкцию,
+При первом запуске она подготавливает временный read-only Deploy Key для
+приватного zsergeyru/proxmox и после авторизации передаёт управление private
+Stage 1. Если Deploy Key ещё не добавлен в GitHub, скрипт покажет public key,
 подождёт нажатия Enter и затем один раз повторит проверку доступа.
 
+После уже завершённой Stage 0 тот же entrypoint не создаёт новые credentials:
+он проверяет постоянный Deploy Key/private checkout, обновляет canonical main и
+запускает свежую private Stage 1.
+
 Параметры:
-  --update-system  передать приватной стадии запрос полного обновления PVE
+  --update-system  передать private Stage 1 запрос полного обновления PVE
   -h, --help       показать эту справку
 USAGE
 }
@@ -87,15 +102,15 @@ acquire_stage0_lock() {
         || die "Не найдена команда flock; на штатном Proxmox VE она должна предоставляться util-linux"
     install -d -m 0755 /run/lock
     exec 9>"$LOCK_FILE"
-    flock -n 9 || die "Другой экземпляр публичной Stage 0 уже выполняется. Параллельный запуск запрещён."
-    ok "Получена эксклюзивная блокировка Stage 0"
+    flock -n 9 || die "Другой экземпляр публичного bootstrap уже выполняется. Параллельный запуск запрещён."
+    ok "Получена эксклюзивная блокировка public bootstrap"
 }
 
 ensure_minimal_packages() {
-    local packages=(git openssh-client curl jq ca-certificates)
+    local packages=(git openssh-client curl jq ca-certificates util-linux)
     local missing=0 cmd
 
-    for cmd in git ssh ssh-keygen curl jq; do
+    for cmd in git ssh ssh-keygen curl jq runuser; do
         command -v "$cmd" >/dev/null 2>&1 || missing=1
     done
 
@@ -113,7 +128,7 @@ ensure_minimal_packages() {
             || die "Не удалось установить минимальные пакеты. Исправьте доступность APT-репозиториев и повторите запуск."
     fi
 
-    for cmd in git ssh ssh-keygen curl jq; do
+    for cmd in git ssh ssh-keygen curl jq runuser; do
         command -v "$cmd" >/dev/null 2>&1 || die "После установки не найдена обязательная команда: $cmd"
     done
 
@@ -276,6 +291,58 @@ handoff_to_private_bootstrap() {
         bash "$private_init" "${FORWARD_ARGS[@]}"
 }
 
+permanent_git() {
+    runuser -u "$DEPLOY_USER" -- \
+        env GIT_SSH_COMMAND="ssh -F ${PERMANENT_SSH_CONFIG}" git "$@"
+}
+
+refresh_permanent_repo_and_handoff() {
+    log "Обновление постоянного private checkout перед запуском Stage 1"
+
+    ensure_minimal_packages
+    check_github_connectivity
+
+    id "$DEPLOY_USER" >/dev/null 2>&1 \
+        || die "Marker Stage 0 существует, но Linux-пользователь ${DEPLOY_USER} отсутствует. Автоматическое создание или новый credential запрещены; восстановите private Stage 1 runtime."
+    [[ -f "$PERMANENT_KEY_FILE" ]] \
+        || die "Marker Stage 0 существует, но постоянный Deploy Key ${PERMANENT_KEY_FILE} отсутствует. Автоматическая ротация запрещена; восстановите credential из backup или выполните отдельную rotation operation."
+    [[ -f "$PERMANENT_KNOWN_HOSTS" ]] \
+        || die "Marker Stage 0 существует, но ${PERMANENT_KNOWN_HOSTS} отсутствует. Восстановите canonical SSH runtime private Stage 1."
+    [[ -f "$PERMANENT_SSH_CONFIG" ]] \
+        || die "Marker Stage 0 существует, но ${PERMANENT_SSH_CONFIG} отсутствует. Восстановите canonical SSH runtime private Stage 1."
+    [[ -d "$PERMANENT_REPO/.git" ]] \
+        || die "Marker Stage 0 существует, но canonical checkout ${PERMANENT_REPO} отсутствует или не является Git repository. Автоматический новый clone после завершённой Stage 0 запрещён."
+
+    local origin_url refs revision bootstrap_version
+    origin_url="$(permanent_git -C "$PERMANENT_REPO" remote get-url origin 2>/dev/null || true)"
+    [[ "$origin_url" == "$PRIVATE_REPO" ]] \
+        || die "Canonical checkout ${PERMANENT_REPO} имеет неожиданный origin '${origin_url:-не задан}'. Ожидается '${PRIVATE_REPO}'. Автоматическая подмена origin запрещена."
+
+    refs="$(permanent_git ls-remote "$PRIVATE_REPO" "refs/heads/${PRIVATE_BRANCH}" 2>/dev/null || true)"
+    [[ -n "$refs" ]] \
+        || die "Постоянный Deploy Key не даёт read-only доступ к ${PRIVATE_REPO}, ветка ${PRIVATE_BRANCH}. Public bootstrap не создаёт новый key после завершённой Stage 0; восстановите/ротируйте canonical credential явно."
+
+    permanent_git -C "$PERMANENT_REPO" fetch --depth 1 origin "$PRIVATE_BRANCH" \
+        || die "Не удалось получить актуальную ветку ${PRIVATE_BRANCH} приватного репозитория"
+    permanent_git -C "$PERMANENT_REPO" reset --hard FETCH_HEAD \
+        || die "Не удалось переключить canonical checkout на полученную ${PRIVATE_BRANCH}"
+    permanent_git -C "$PERMANENT_REPO" clean -ffd \
+        || die "Не удалось очистить canonical checkout от неотслеживаемых файлов"
+
+    revision="$(permanent_git -C "$PERMANENT_REPO" rev-parse HEAD)"
+    [[ -f "$PRIVATE_INIT_CANONICAL" ]] \
+        || die "После обновления private repo не найден ${PRIVATE_INIT_CANONICAL}"
+
+    bootstrap_version="$(sed -n 's/^BOOTSTRAP_VERSION=//p' "$PRIVATE_INIT_CANONICAL" | head -n1)"
+    ok "Canonical private repo обновлён: ${revision}"
+    if [[ -n "$bootstrap_version" ]]; then
+        ok "Будет запущена private Stage 1 BOOTSTRAP_VERSION=${bootstrap_version}"
+    fi
+
+    log "Передача управления свежей private Stage 1"
+    bash "$PRIVATE_INIT_CANONICAL" "${FORWARD_ARGS[@]}"
+}
+
 cleanup_stage0() {
     local revision now marker_tmp
     revision="$(git -C "$TEMP_REPO" rev-parse HEAD 2>/dev/null || true)"
@@ -310,12 +377,9 @@ main() {
 
     if [[ -f "$COMPLETE_MARKER" ]]; then
         printf '\nStage 0 уже была успешно завершена.\n'
-        printf 'Временная область bootstrap отсутствует; дальнейшая инициализация и сопровождение выполняются из приватного zsergeyru/proxmox.\n'
-        printf 'Private init: %s\n' "$PRIVATE_INIT_CANONICAL"
-
-        if (( ${#FORWARD_ARGS[@]} )); then
-            die "Параметр --update-system не выполняется повторно через Stage 0. Запустите: ${PRIVATE_INIT_CANONICAL} --update-system"
-        fi
+        printf 'Новый public запуск обновит canonical private checkout и запустит свежую Stage 1.\n'
+        refresh_permanent_repo_and_handoff
+        printf '\nPRIVATE STAGE 1 УСПЕШНО ЗАВЕРШЕНА\n'
         exit 0
     fi
 
@@ -330,6 +394,7 @@ main() {
 
     printf '\nПУБЛИЧНАЯ STAGE 0 УСПЕШНО ЗАВЕРШЕНА\n'
     printf 'Дальнейший source of truth и вся логика PVE находятся в приватном zsergeyru/proxmox.\n'
+    printf 'Для последующих запусков используйте ту же public curl-команду: она обновит private main и передаст управление свежей Stage 1.\n'
 }
 
 main "$@"
