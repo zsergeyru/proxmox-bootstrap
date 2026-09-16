@@ -5,7 +5,7 @@
 Текущая версия Public Bootstrap:
 
 ```text
-PUBLIC_BOOTSTRAP_VERSION=7
+PUBLIC_BOOTSTRAP_VERSION=8
 ```
 
 В проекте два компонента:
@@ -13,8 +13,9 @@ PUBLIC_BOOTSTRAP_VERSION=7
 ```text
 Public Bootstrap
 bootstrap-pve.sh
-→ получить или обновить private repo
+→ безопасно получить или обновить private repo
 → выбрать точную Git revision
+→ удерживать общую orchestration lock
 → запустить PVE Configuration из этой revision
 
 PVE Configuration
@@ -24,13 +25,13 @@ zsergeyru/proxmox/scripts/pve/setup/configure-pve.sh
 
 ## Основная команда
 
-Войдите в shell Proxmox под `root` и используйте одну и ту же команду как при первоначальной установке, так и при последующих запусках или продолжении незавершённого первого запуска:
+Войдите в shell Proxmox под `root` и используйте одну и ту же команду при первоначальной установке, последующих запусках и продолжении незавершённого first run:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/main/bootstrap-pve.sh | bash
 ```
 
-Обычный запуск **не выполняет полный `apt full-upgrade` системы**.
+Обычный запуск не выполняет полный `apt full-upgrade`.
 
 Для осознанного полного обновления Proxmox VE / Debian:
 
@@ -38,22 +39,40 @@ curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/main/bo
 curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/main/bootstrap-pve.sh | bash -s -- --update-system
 ```
 
-Без `--update-system` PVE Configuration всё равно может выполнять `apt update` и устанавливать отсутствующие пакеты, необходимые проекту.
+## Общая orchestration lock
+
+Public Bootstrap и private PVE Configuration используют одну lock:
+
+```text
+/run/lock/proxmox-orchestration.lock
+```
+
+Bootstrap берёт lock до работы с private checkout и держит её до полного завершения PVE Configuration. Lock передаётся child process через открытый fd.
+
+Поэтому одновременно не выполняются:
+
+```text
+bootstrap + bootstrap
+bootstrap + configure-pve.sh
+configure-pve.sh + configure-pve.sh
+```
+
+Это исключает ситуацию, когда canonical checkout переключается на другую revision в середине configuration run.
 
 ## Первый запуск
 
-Если постоянный marker отсутствует и canonical runtime ещё не создан, `bootstrap-pve.sh` выполняет:
+Если permanent marker отсутствует и canonical runtime ещё не создан:
 
 ```text
 root + Proxmox check
-→ exclusive lock
+→ shared orchestration lock
 → minimal Git/SSH packages
 → DNS/HTTPS GitHub check
 → temporary read-only GitHub Deploy Key
 → authorization private repo/main
 → temporary shallow checkout
-→ определить точный HEAD private repo
-→ передать этот SHA в PVE Configuration
+→ определить exact HEAD private repo
+→ передать SHA в PVE Configuration
 → PVE Configuration создаёт permanent runtime и canonical checkout той же revision
 → удалить /var/lib/proxmox-bootstrap
 → создать /var/lib/proxmox-deployer/state/bootstrap-complete
@@ -70,23 +89,17 @@ root + Proxmox check
 └── private-repo/
 ```
 
-Если Deploy Key ещё не добавлен в GitHub, Public Bootstrap показывает public key и ждёт подтверждение пользователя через терминал. Write access для Deploy Key не включается.
+Если Deploy Key ещё не добавлен в GitHub, Public Bootstrap показывает public key и ждёт подтверждение пользователя через терминал. Write access не включается.
 
 ## Продолжение незавершённого первого запуска
 
-Если PVE Configuration была прервана после того, как permanent runtime уже частично или полностью создан, **не нужно удалять `/etc/proxmox-deployer` или `/var/lib/proxmox-deployer`**.
+Если PVE Configuration была прервана после частичного или полного создания permanent runtime, **не нужно удалять `/etc/proxmox-deployer` или `/var/lib/proxmox-deployer`**.
 
-Та же основная команда безопасно продолжает работу:
+Та же команда безопасно продолжает работу. Существующие API token secrets и SSH private keys не удаляются и не ротируются автоматически.
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/main/bootstrap-pve.sh | bash
-```
+Если permanent runtime уже содержит `pvedeploy`, canonical Deploy Key, SSH config/known_hosts и canonical checkout, Public Bootstrap использует их как permanent runtime и повторно запускает текущую PVE Configuration.
 
-Если permanent runtime уже содержит `pvedeploy`, canonical Deploy Key, SSH config/known_hosts и canonical Git checkout, Public Bootstrap использует их как обычный permanent runtime, обновляет private repo и снова запускает PVE Configuration.
-
-Если permanent runtime создан только частично, Public Bootstrap продолжает first-run path через сохранённый temporary runtime. Существующие постоянные credentials не удаляются и не ротируются автоматически.
-
-Это важно для API tokens и SSH keys: если token уже создан в Proxmox, его одноразовый secret нельзя получить повторно, поэтому bootstrap не должен лечить частичную ошибку удалением локальных secrets.
+Если runtime создан только частично, first-run path продолжается через temporary runtime.
 
 ## Повторный запуск после завершённого bootstrap
 
@@ -96,7 +109,7 @@ curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/main/bo
 /var/lib/proxmox-deployer/state/bootstrap-complete
 ```
 
-Public Bootstrap использует permanent runtime:
+используется permanent runtime:
 
 ```text
 pvedeploy
@@ -106,30 +119,43 @@ pvedeploy
 /var/lib/proxmox-deployer/repo
 ```
 
-Алгоритм:
+Перед любым reset Public Bootstrap проверяет:
 
 ```text
-проверить permanent runtime
-→ проверить origin canonical checkout
-→ подтвердить read-only доступ к zsergeyru/proxmox/main
+origin == git@github.com:zsergeyru/proxmox.git
+canonical worktree полностью clean
+```
+
+Clean означает отсутствие tracked, staged, untracked и ignored drift.
+
+Если локальный drift обнаружен, Bootstrap делает STOP и **не выполняет destructive reset/clean поверх локальных данных**.
+
+Для clean checkout алгоритм:
+
+```text
+проверить read-only доступ к zsergeyru/proxmox/main
 → fetch main
 → reset --hard FETCH_HEAD
 → clean -ffd
-→ зафиксировать полученный SHA
-→ запустить scripts/pve/setup/configure-pve.sh с PVE_CONFIGURATION_SOURCE_REVISION=<SHA>
+→ повторно подтвердить clean state
+→ определить SHA
+→ запустить PVE Configuration с PVE_CONFIGURATION_SOURCE_REVISION=<SHA>
 ```
 
-Private key не ротируется автоматически. Если постоянный credential, SSH config или canonical checkout повреждён, Public Bootstrap останавливается и требует явного recovery.
+Private credential не ротируется автоматически. Повреждённый permanent runtime требует явного recovery.
 
 ## Одна revision на один configuration run
 
-После выбора private revision Public Bootstrap передаёт её в PVE Configuration через:
+После выбора private revision Public Bootstrap передаёт:
 
 ```text
-PVE_CONFIGURATION_SOURCE_REVISION
+PVE_CONFIGURATION_SOURCE_REVISION=<40-char SHA>
+PVE_ORCHESTRATION_LOCK_HELD=1
 ```
 
-Это предотвращает смешивание кода из двух commits в одном запуске. Если `main` изменится между temporary checkout и canonical clone/fetch, PVE Configuration не переключится молча на более новый commit, а остановится и предложит повторить Public Bootstrap.
+PVE Configuration до загрузки своих модулей проверяет, что source checkout имеет именно этот HEAD и не содержит local drift. Canonical checkout после sync также обязан совпасть с source SHA.
+
+Если `main` изменится между temporary checkout и canonical clone/fetch, текущий run остановится вместо смешивания commits.
 
 ## Постоянные пути
 
@@ -151,6 +177,18 @@ Marker успешного первоначального bootstrap:
 /var/lib/proxmox-deployer/state/bootstrap-complete
 ```
 
-В публичном репозитории не хранятся внутренняя конфигурация Proxmox, роли, ACL, API-токены, планы VM/LXC, template implementation, конфигурация AI или другие детали приватной инфраструктуры.
+## CI
+
+Public repository checks включают:
+
+```text
+bash -n
+ShellCheck
+whitespace check
+```
+
+Private repository выполняет дополнительные runtime/template/validator tests.
+
+В публичном репозитории не хранятся внутренняя конфигурация Proxmox, роли, ACL, API tokens, планы VM/LXC, template implementation, конфигурация AI или другие детали приватной инфраструктуры.
 
 Secrets, private keys, passwords и рабочие credentials в Git не сохраняются.

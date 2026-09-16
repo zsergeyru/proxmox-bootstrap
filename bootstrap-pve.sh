@@ -8,7 +8,7 @@ set -Eeuo pipefail
 # управление PVE Configuration. Повторный запуск обновляет canonical private
 # checkout и снова запускает актуальную PVE Configuration.
 
-PUBLIC_BOOTSTRAP_VERSION=7
+PUBLIC_BOOTSTRAP_VERSION=8
 
 PRIVATE_REPO="git@github.com:zsergeyru/proxmox.git"
 PRIVATE_BRANCH="main"
@@ -28,7 +28,7 @@ PERMANENT_SSH_DIR="/etc/proxmox-deployer/ssh"
 PERMANENT_KEY_FILE="${PERMANENT_SSH_DIR}/github_proxmox_repo_ed25519"
 PERMANENT_KNOWN_HOSTS="${PERMANENT_SSH_DIR}/known_hosts"
 PERMANENT_SSH_CONFIG="${PERMANENT_SSH_DIR}/config"
-LOCK_FILE="/run/lock/proxmox-public-bootstrap.lock"
+LOCK_FILE="/run/lock/proxmox-orchestration.lock"
 PVE_CONFIGURATION_CANONICAL="${PERMANENT_REPO}/scripts/pve/setup/configure-pve.sh"
 PVE_CONFIGURATION_VERSION_FILE="${PERMANENT_REPO}/scripts/pve/setup/lib/00-common.sh"
 
@@ -68,6 +68,9 @@ Public Bootstrap — публичная точка входа проекта Pro
   - обновляет /var/lib/proxmox-deployer/repo;
   - запускает актуальную PVE Configuration.
 
+Public Bootstrap и PVE Configuration используют одну orchestration lock, поэтому
+canonical checkout и host configuration никогда не изменяются параллельно.
+
 Параметры:
   --update-system  дополнительно запросить apt full-upgrade Proxmox/Debian
   -h, --help       показать эту справку
@@ -93,8 +96,9 @@ acquire_bootstrap_lock() {
         || die "Не найдена команда flock; на штатном Proxmox VE она должна предоставляться util-linux"
     install -d -m 0755 /run/lock
     exec 9>"$LOCK_FILE"
-    flock -n 9 || die "Другой экземпляр Public Bootstrap уже выполняется. Параллельный запуск запрещён."
-    ok "Получена эксклюзивная блокировка Public Bootstrap"
+    flock -n 9 \
+        || die "Другой Public Bootstrap или PVE Configuration уже выполняется. Параллельный запуск запрещён."
+    ok "Получена общая orchestration lock Public Bootstrap/PVE Configuration"
 }
 
 ensure_minimal_packages() {
@@ -255,6 +259,7 @@ handoff_to_pve_configuration() {
     PVE_BOOTSTRAP_KEY_FILE="$BOOTSTRAP_KEY_FILE" \
     PVE_BOOTSTRAP_KNOWN_HOSTS="$BOOTSTRAP_KNOWN_HOSTS" \
     PVE_CONFIGURATION_SOURCE_REVISION="$revision" \
+    PVE_ORCHESTRATION_LOCK_HELD=1 \
         bash "$configure" "${FORWARD_ARGS[@]}"
 }
 
@@ -269,6 +274,14 @@ permanent_runtime_ready_for_refresh() {
         && [[ -f "$PERMANENT_KNOWN_HOSTS" ]] \
         && [[ -f "$PERMANENT_SSH_CONFIG" ]] \
         && [[ -d "$PERMANENT_REPO/.git" ]]
+}
+
+assert_permanent_repo_clean() {
+    local status
+    status="$(permanent_git -C "$PERMANENT_REPO" status --porcelain=v1 --untracked-files=all --ignored)" \
+        || die "Не удалось проверить clean state canonical checkout ${PERMANENT_REPO}"
+    [[ -z "$status" ]] \
+        || die "Canonical checkout ${PERMANENT_REPO} содержит локальный drift. Bootstrap не выполняет destructive reset/clean поверх локальных данных. Первый элемент: $(head -n1 <<<"$status")"
 }
 
 refresh_permanent_repo_and_handoff() {
@@ -289,6 +302,8 @@ refresh_permanent_repo_and_handoff() {
     [[ "$origin_url" == "$PRIVATE_REPO" ]] \
         || die "Canonical checkout ${PERMANENT_REPO} имеет неожиданный origin '${origin_url:-не задан}'. Ожидается '${PRIVATE_REPO}'."
 
+    assert_permanent_repo_clean
+
     refs="$(permanent_git ls-remote "$PRIVATE_REPO" "refs/heads/${PRIVATE_BRANCH}" 2>/dev/null || true)"
     [[ -n "$refs" ]] || die "Постоянный Deploy Key не даёт read-only доступ к ${PRIVATE_REPO}/${PRIVATE_BRANCH}."
 
@@ -298,6 +313,7 @@ refresh_permanent_repo_and_handoff() {
         || die "Не удалось переключить canonical checkout на полученную ${PRIVATE_BRANCH}"
     permanent_git -C "$PERMANENT_REPO" clean -ffd \
         || die "Не удалось очистить canonical checkout от неотслеживаемых файлов"
+    assert_permanent_repo_clean
 
     revision="$(permanent_git -C "$PERMANENT_REPO" rev-parse HEAD)"
     [[ -f "$PVE_CONFIGURATION_CANONICAL" ]] || die "После обновления private repo не найден ${PVE_CONFIGURATION_CANONICAL}"
@@ -308,6 +324,7 @@ refresh_permanent_repo_and_handoff() {
 
     log "Запуск актуальной PVE Configuration revision=${revision}"
     PVE_CONFIGURATION_SOURCE_REVISION="$revision" \
+    PVE_ORCHESTRATION_LOCK_HELD=1 \
         bash "$PVE_CONFIGURATION_CANONICAL" "${FORWARD_ARGS[@]}"
 }
 

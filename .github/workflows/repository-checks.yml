@@ -14,8 +14,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+
       - name: Validate shell syntax
         run: bash -n bootstrap-pve.sh
+
+      - name: ShellCheck
+        run: shellcheck -S warning bootstrap-pve.sh
 
       - name: Check whitespace errors
         run: git diff --check
