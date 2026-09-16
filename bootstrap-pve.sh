@@ -8,7 +8,7 @@ set -Eeuo pipefail
 # управление PVE Configuration. Повторный запуск обновляет canonical private
 # checkout и снова запускает актуальную PVE Configuration.
 
-PUBLIC_BOOTSTRAP_VERSION=8
+PUBLIC_BOOTSTRAP_VERSION=9
 
 PRIVATE_REPO="git@github.com:zsergeyru/proxmox.git"
 PRIVATE_BRANCH="main"
@@ -242,7 +242,9 @@ sync_temporary_private_repo() {
             || die "Временный checkout ${TEMP_REPO} имеет неожиданный origin '${origin_url:-не задан}'. Автоматическая подмена origin запрещена."
         git_bootstrap -C "$TEMP_REPO" fetch --depth 1 origin "$PRIVATE_BRANCH"
         git_bootstrap -C "$TEMP_REPO" reset --hard FETCH_HEAD
-        git_bootstrap -C "$TEMP_REPO" clean -ffd
+        # Temporary checkout disposable: remove ignored build/cache artifacts too,
+        # otherwise strict source verification in configure-pve.sh would stop resume.
+        git_bootstrap -C "$TEMP_REPO" clean -ffdx
     fi
 
     ok "Private repo получен shallow clone глубиной 1 commit"

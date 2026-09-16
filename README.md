@@ -5,7 +5,7 @@
 Текущая версия Public Bootstrap:
 
 ```text
-PUBLIC_BOOTSTRAP_VERSION=8
+PUBLIC_BOOTSTRAP_VERSION=9
 ```
 
 В проекте два компонента:
@@ -99,7 +99,7 @@ root + Proxmox check
 
 Если permanent runtime уже содержит `pvedeploy`, canonical Deploy Key, SSH config/known_hosts и canonical checkout, Public Bootstrap использует их как permanent runtime и повторно запускает текущую PVE Configuration.
 
-Если runtime создан только частично, first-run path продолжается через temporary runtime.
+Если runtime создан только частично, first-run path продолжается через temporary runtime. Временный checkout считается одноразовым: перед повторным handoff он переводится на свежий `FETCH_HEAD` и очищается через `git clean -ffdx`, включая ignored cache/build artifacts. Это предотвращает ложный STOP строгой source-проверки из-за `__pycache__`, `.cache` и других временных файлов. Permanent checkout такого destructive cleanup не получает.
 
 ## Повторный запуск после завершённого bootstrap
 
