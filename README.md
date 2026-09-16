@@ -2,7 +2,7 @@
 
 Публичный репозиторий содержит минимальную точку входа для первоначального подключения Proxmox VE к приватному инфраструктурному репозиторию и для последующих повторных запусков конфигурации.
 
-В проекте используются два понятных компонента:
+В проекте два компонента:
 
 ```text
 Public Bootstrap
@@ -14,8 +14,6 @@ PVE Configuration
 scripts/pve/setup/configure-pve.sh
 → привести Proxmox VE к ожидаемому состоянию проекта
 ```
-
-Термины `Stage 0` и `Stage 1` больше не используются как основные названия.
 
 ## Основная команда
 
@@ -93,6 +91,8 @@ curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/main/bo
 
 Если Deploy Key не авторизован, выполнение завершается с явной ошибкой. При повторном незавершённом Public Bootstrap существующий временный private key используется повторно.
 
+Если `bootstrap-complete` отсутствует, но постоянный runtime уже существует, Public Bootstrap останавливается. Для нового проекта такое состояние считается несогласованным test-state и должно быть очищено перед новым чистым bootstrap.
+
 ## Повторный запуск
 
 После успешного первоначального bootstrap новая временная identity не создаётся.
@@ -128,23 +128,7 @@ Private key не ротируется автоматически. Если по�
 /var/lib/proxmox-deployer/repo/scripts/pve/setup/configure-pve.sh
 ```
 
-## Совместимость со старыми командами
-
-Старый public путь временно сохранён:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/main/init-pve.sh | bash
-```
-
-Он показывает предупреждение и загружает `bootstrap-pve.sh`. Для новых инструкций и автоматизации следует использовать только `bootstrap-pve.sh`.
-
-Существующий legacy marker:
-
-```text
-/var/lib/proxmox-deployer/state/stage0-complete
-```
-
-также распознаётся. После успешного повторного запуска создаётся новый marker:
+Постоянный marker успешного первоначального bootstrap:
 
 ```text
 /var/lib/proxmox-deployer/state/bootstrap-complete
