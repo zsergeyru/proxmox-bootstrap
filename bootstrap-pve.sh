@@ -227,6 +227,8 @@ prepare_permanent_github_access() {
         if [[ -f "$LEGACY_BOOTSTRAP_KEY_FILE" ]]; then
             install -o root -g root -m 0600 "$LEGACY_BOOTSTRAP_KEY_FILE" "$PERMANENT_KEY_FILE"
             ok "Существующий ключ незавершённого Public Bootstrap v11 перенесён в постоянное хранилище"
+        elif [[ -d "$PERMANENT_REPO/.git" ]]; then
+            die "Canonical private checkout уже существует, но постоянный GitHub Deploy Key отсутствует. Автоматическое создание нового credential запрещено; восстановите прежний ключ."
         else
             local old_umask
             old_umask="$(umask)"
@@ -518,6 +520,11 @@ main() {
     acquire_bootstrap_lock
     ensure_minimal_packages
     check_github_connectivity
+
+    if [[ -f "$COMPLETE_MARKER" && ! -f "$PERMANENT_KEY_FILE" ]]; then
+        die "Bootstrap marker существует, но постоянный GitHub Deploy Key отсутствует. Автоматическое создание нового ключа запрещено; восстановите прежний credential."
+    fi
+
     prepare_permanent_github_access
 
     if [[ -f "$COMPLETE_MARKER" ]]; then
