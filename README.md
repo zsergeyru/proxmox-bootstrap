@@ -5,7 +5,7 @@
 Текущая версия Public Bootstrap:
 
 ```text
-PUBLIC_BOOTSTRAP_VERSION=11
+PUBLIC_BOOTSTRAP_VERSION=12
 ```
 
 В проекте два компонента:
@@ -13,6 +13,7 @@ PUBLIC_BOOTSTRAP_VERSION=11
 ```text
 Public Bootstrap
 bootstrap-pve.sh
+→ создать или использовать постоянный root-only GitHub Deploy Key
 → безопасно получить или обновить private repo
 → выбрать точную Git revision
 → удерживать общую orchestration lock
@@ -27,7 +28,7 @@ zsergeyru/proxmox/scripts/pve/setup/configure-pve.sh
 
 ## Основная команда
 
-Войдите в shell Proxmox под `root` и используйте одну и ту же команду при первоначальной установке, последующих запусках и продолжении незавершённого first run:
+Войдите в shell Proxmox под `root` и используйте одну и ту же команду при первоначальной установке, последующих запусках и продолжении незавершённого первого запуска:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/main/bootstrap-pve.sh | bash
@@ -47,7 +48,7 @@ curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/main/bo
 curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/main/bootstrap-pve.sh | bash -s -- --smoke-test-template
 ```
 
-Параметр передаётся без изменения в private PVE Configuration. Если template `9000` только что создан текущим configuration run, smoke-test запускается автоматически и отдельный ключ не требуется.
+Параметр передаётся без изменения в private PVE Configuration. Если template `9000` только что создан текущим configuration run, smoke-test запускается автоматически и отдельный флаг не требуется.
 
 Smoke-test использует временный VMID `9099`. При успешной проверке VM штатно выключается и удаляется; при ошибке или interruption VM `9099` намеренно сохраняется для диагностики и не удаляется автоматически.
 
@@ -59,7 +60,7 @@ Public Bootstrap и private PVE Configuration используют одну lock
 /run/lock/proxmox-orchestration.lock
 ```
 
-Bootstrap берёт lock до работы с private checkout и держит её до полного завершения PVE Configuration. Lock передаётся child process через открытый fd.
+Bootstrap берёт lock до работы с private checkout и держит её до полного завершения PVE Configuration. Lock передаётся дочернему процессу через открытый файловый дескриптор.
 
 Поэтому одновременно не выполняются:
 
@@ -80,28 +81,35 @@ root + Proxmox check
 → shared orchestration lock
 → minimal Git/SSH packages
 → DNS/HTTPS GitHub check
-→ temporary read-only GitHub Deploy Key
-→ authorization private repo/main
+→ создать постоянный root-only read-only GitHub Deploy Key
+→ сохранить его в /etc/proxmox-deployer/ssh/
+→ authorization private repo/main этим же ключом
 → temporary shallow checkout root:root
 → определить exact HEAD private repo
 → передать SHA в PVE Configuration
-→ PVE Configuration создаёт permanent runtime и canonical checkout той же revision
+→ PVE Configuration создаёт/проверяет permanent runtime и canonical checkout той же revision
 → удалить /var/lib/proxmox-bootstrap
 → создать /var/lib/proxmox-deployer/state/bootstrap-complete
 ```
 
-Временная область:
+Временная область Public Bootstrap теперь содержит только одноразовую копию репозитория:
 
 ```text
 /var/lib/proxmox-bootstrap/
-├── github_proxmox_repo_ed25519
-├── github_proxmox_repo_ed25519.pub
-├── known_hosts
-├── ssh_config
 └── private-repo/
 ```
 
-Если Deploy Key ещё не добавлен в GitHub, Public Bootstrap показывает public key и ждёт подтверждение пользователя через терминал. Write access не включается.
+GitHub Deploy Key, `known_hosts` и SSH config с первого запуска находятся сразу в постоянном месте:
+
+```text
+/etc/proxmox-deployer/ssh/
+├── github_proxmox_repo_ed25519
+├── github_proxmox_repo_ed25519.pub
+├── known_hosts
+└── config
+```
+
+Если Deploy Key ещё не добавлен в GitHub, Public Bootstrap показывает его постоянную public-часть и ждёт подтверждение пользователя через терминал. Write access не включается.
 
 ## Продолжение незавершённого первого запуска
 
@@ -109,9 +117,13 @@ root + Proxmox check
 
 Та же команда безопасно продолжает работу. Существующие API token secrets и SSH private keys не удаляются и не ротируются автоматически.
 
+Если постоянный GitHub Deploy Key уже существует, Public Bootstrap всегда использует именно его. Второй временный Deploy Key не создаётся.
+
 Если permanent runtime уже содержит `pvedeploy`, canonical Deploy Key, SSH config/known_hosts и canonical checkout, Public Bootstrap использует их как permanent runtime и повторно запускает текущую PVE Configuration.
 
-Если runtime создан только частично, first-run path продолжается через temporary runtime. Временный checkout считается одноразовым: перед повторным handoff он переводится на свежий `FETCH_HEAD` и очищается через `git clean -ffdx`, включая ignored cache/build artifacts. Это предотвращает ложный STOP строгой source-проверки из-за `__pycache__`, `.cache` и других временных файлов. Permanent checkout такого destructive cleanup не получает.
+Если runtime создан только частично, первый запуск продолжается через временный checkout, но с тем же постоянным GitHub credential. Временный checkout считается одноразовым: перед повторным handoff он переводится на свежий `FETCH_HEAD` и очищается через `git clean -ffdx`, включая ignored cache/build artifacts. Permanent checkout такого destructive cleanup не получает.
+
+Для безопасного продолжения незавершённого Public Bootstrap v11 поддерживается одноразовая миграция: если старый ключ остался в `/var/lib/proxmox-bootstrap/`, а постоянного ключа ещё нет, этот же ключ переносится в `/etc/proxmox-deployer/ssh/`. Новый временный ключ при этом не создаётся.
 
 ## Root trust boundary canonical source
 
@@ -135,8 +147,6 @@ Canonical repository и Git credential являются частью root-truste
 ```
 
 `pvedeploy` может читать project source через parent directory, но не может менять canonical checkout, `.git` metadata или GitHub Deploy Key. Это не мешает будущему `deploy-guest` читать manifests/scripts, но не позволяет ограниченному runtime user подменить код, который позже будет исполнен `root`.
-
-Public Bootstrap v10+ автоматически переводит существующий старый `pvedeploy`-owned checkout/credential в эту модель до запуска PVE Configuration. После миграции каждый handoff дополнительно проверяет ownership и отсутствие group/other write.
 
 ## Повторный запуск после завершённого bootstrap
 
@@ -194,7 +204,7 @@ PVE_ORCHESTRATION_LOCK_HELD=1
 
 PVE Configuration до загрузки своих модулей проверяет, что source checkout имеет именно этот HEAD, не содержит local drift и является root-owned/non-writable для `pvedeploy` или других non-root users. Canonical checkout после sync также обязан совпасть с source SHA.
 
-Если `main` изменится между temporary checkout и canonical clone/fetch, текущий run остановится вместо смешивания commits.
+Если `main` изменится между временным checkout и canonical clone/fetch, текущий run остановится вместо смешивания commits.
 
 ## Постоянные пути
 
@@ -202,6 +212,12 @@ Canonical private checkout:
 
 ```text
 /var/lib/proxmox-deployer/repo
+```
+
+Canonical GitHub Deploy Key:
+
+```text
+/etc/proxmox-deployer/ssh/github_proxmox_repo_ed25519
 ```
 
 Каноническая PVE Configuration:
