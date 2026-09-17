@@ -9,7 +9,7 @@ set -Eeuo pipefail
 # Повторный запуск использует тот же credential, обновляет canonical private
 # checkout и снова запускает актуальную PVE Configuration.
 
-PUBLIC_BOOTSTRAP_VERSION=12
+PUBLIC_BOOTSTRAP_VERSION=13
 
 PRIVATE_REPO="git@github.com:zsergeyru/proxmox.git"
 PRIVATE_BRANCH="main"
@@ -19,7 +19,7 @@ BOOTSTRAP_TEMP_DIR="/var/lib/proxmox-bootstrap"
 TEMP_REPO="${BOOTSTRAP_TEMP_DIR}/private-repo"
 
 # Только для безопасного продолжения незавершённого запуска Public Bootstrap v11.
-# v12 никогда не создаёт эти файлы и удаляет их после успешной миграции.
+# v13 никогда не создаёт эти файлы и удаляет их после успешной миграции.
 LEGACY_BOOTSTRAP_KEY_FILE="${BOOTSTRAP_TEMP_DIR}/github_proxmox_repo_ed25519"
 LEGACY_BOOTSTRAP_KEY_PUB_FILE="${LEGACY_BOOTSTRAP_KEY_FILE}.pub"
 LEGACY_BOOTSTRAP_KNOWN_HOSTS="${BOOTSTRAP_TEMP_DIR}/known_hosts"
@@ -199,7 +199,7 @@ check_github_connectivity() {
     command -v getent >/dev/null 2>&1 || die "Не найдена обязательная команда getent"
     getent ahosts github.com >/dev/null || die "Не работает DNS-разрешение github.com"
     getent ahosts api.github.com >/dev/null || die "Не работает DNS-разрешение api.github.com"
-    curl -fsS --connect-timeout 10 --max-time 20 -o /dev/null https://github.com/ \
+    curl -fsSI --connect-timeout 10 --max-time 20 -o /dev/null https://github.com/ \
         || die "GitHub недоступен по HTTPS с этого Proxmox host"
     curl -fsS --connect-timeout 10 --max-time 20 -o /dev/null https://api.github.com/meta \
         || die "GitHub API недоступен по HTTPS с этого Proxmox host"
