@@ -9,7 +9,7 @@ set -Eeuo pipefail
 # Повторный запуск использует тот же credential, обновляет canonical private
 # checkout и снова запускает актуальную PVE Configuration.
 
-PUBLIC_BOOTSTRAP_VERSION=14
+PUBLIC_BOOTSTRAP_VERSION="1.0.0"
 
 PRIVATE_REPO="git@github.com:zsergeyru/proxmox.git"
 PRIVATE_BRANCH="main"
