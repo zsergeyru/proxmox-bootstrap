@@ -5,7 +5,7 @@
 Текущая версия Public Bootstrap:
 
 ```text
-PUBLIC_BOOTSTRAP_VERSION=14
+PUBLIC_BOOTSTRAP_VERSION="1.0.0"
 ```
 
 В проекте два компонента:
