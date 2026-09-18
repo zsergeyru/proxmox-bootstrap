@@ -9,7 +9,7 @@ set -Eeuo pipefail
 # Повторный запуск использует тот же credential, обновляет canonical private
 # checkout и снова запускает актуальную PVE Configuration.
 
-PUBLIC_BOOTSTRAP_VERSION=13
+PUBLIC_BOOTSTRAP_VERSION=14
 
 PRIVATE_REPO="git@github.com:zsergeyru/proxmox.git"
 PRIVATE_BRANCH="main"
@@ -429,6 +429,7 @@ assert_permanent_repo_clean() {
     local status
     status="$(permanent_git -C "$PERMANENT_REPO" status --porcelain=v1 --untracked-files=all --ignored)" \
         || die "Не удалось проверить clean state canonical checkout ${PERMANENT_REPO}"
+    status="$(printf '%s\n' "$status" | grep -Ev '^!! .*(__pycache__/|\.py[co]$)' || true)"
     [[ -z "$status" ]] \
         || die "Canonical checkout ${PERMANENT_REPO} содержит локальный drift. Bootstrap не выполняет destructive reset/clean поверх локальных данных. Первый элемент: $(head -n1 <<<"$status")"
 }
