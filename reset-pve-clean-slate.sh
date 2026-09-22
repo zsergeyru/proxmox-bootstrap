@@ -68,8 +68,8 @@ usage() {
   - VM 100;
   - сеть PVE;
   - сами storage local/local-lvm;
-  - исходный пакетный состав установщика PVE;
-  - пакеты, которые текущий PVE не позволяет безопасно удалить;
+  - исходный пакетный состав установщика PVE, если его снимок сохранился;
+  - при отсутствии снимка — штатное PVE плюс только то, что нельзя безопасно удалить;
   - сам Proxmox VE.
 USAGE
 }
@@ -96,7 +96,8 @@ detect_initial_status() {
         return
     fi
 
-    die "Не найден исходный список пакетов установщика PVE. Нельзя гарантировать возврат к чистому состоянию."
+    INITIAL_STATUS_FILE=""
+    warn "Исходный список пакетов установщика не найден. Для пакетной очистки используется точный список пакетов, которые устанавливали наши старые сценарии."
 }
 
 initial_status_stream() {
@@ -107,26 +108,14 @@ initial_status_stream() {
 }
 
 initial_package_list() {
+    [[ -n "$INITIAL_STATUS_FILE" ]] || return 0
     initial_status_stream | awk '$1 == "Package:" {print $2}' | sort -u
 }
 
 initial_package_exists() {
     local package=$1
+    [[ -n "$INITIAL_STATUS_FILE" ]] || return 1
     initial_package_list | grep -Fxq "$package"
-}
-
-detect_bootstrap_fetcher() {
-    if initial_package_exists wget && command -v wget >/dev/null 2>&1; then
-        BOOTSTRAP_FETCHER="wget"
-        return
-    fi
-
-    if initial_package_exists curl && command -v curl >/dev/null 2>&1; then
-        BOOTSTRAP_FETCHER="curl"
-        return
-    fi
-
-    BOOTSTRAP_FETCHER="apt"
 }
 
 require_pve_root() {
@@ -140,7 +129,6 @@ require_pve_root() {
     pveversion >/dev/null 2>&1 || die "Proxmox VE не обнаружен"
 
     detect_initial_status
-    detect_bootstrap_fetcher
 
     node_count="$(pvesh get /nodes --output-format json | jq 'length')"
     [[ "$node_count" == "1" ]] \
@@ -154,7 +142,11 @@ require_pve_root() {
 
     name="$(qm config "$KEEP_VMID" | awk -F ': ' '$1 == "name" {print $2; exit}')"
     ok "VM $KEEP_VMID будет сохранена${name:+ ($name)}"
-    ok "Исходный пакетный состав найден: $INITIAL_STATUS_FILE"
+    if [[ -n "$INITIAL_STATUS_FILE" ]]; then
+        ok "Исходный пакетный состав найден: $INITIAL_STATUS_FILE"
+    else
+        warn "Точного снимка пакетов ISO нет; очищаем только достоверно известные пакеты проекта."
+    fi
 }
 
 run() {
@@ -474,10 +466,33 @@ restore_storage_defaults() {
         pvesm set local --content "$new_content"
 }
 
+project_installed_packages() {
+    cat <<'EOF_PACKAGES'
+git
+openssh-client
+python3
+python3-yaml
+python3-jsonschema
+curl
+jq
+ca-certificates
+mc
+htop
+tmux
+smartmontools
+lm-sensors
+util-linux
+EOF_PACKAGES
+}
+
 manual_extra_packages() {
-    comm -23 \
-        <(apt-mark showmanual | sort -u) \
-        <(initial_package_list)
+    if [[ -n "$INITIAL_STATUS_FILE" ]]; then
+        comm -23 \
+            <(apt-mark showmanual | sort -u) \
+            <(initial_package_list)
+    else
+        project_installed_packages
+    fi
 }
 
 apt_simulation_removals() {
@@ -493,7 +508,7 @@ assert_no_protected_package_removal() {
     removals="$(apt_simulation_removals "$@")"
 
     protected="$(
-        grep -E '^(proxmox-ve|pve-manager|pve-cluster|pve-container|qemu-server|pve-qemu-kvm|proxmox-(default-)?kernel|proxmox-kernel-|pve-kernel-|pve-firewall|pve-ha-manager|pve-storage|pve-common|libpve-|openssh-server|apt|dpkg|systemd|ifupdown2|lvm2|thin-provisioning-tools|grub-|initramfs-tools|bash|coreutils|libc6)$' \
+        grep -E '^(proxmox-ve|pve-manager|pve-cluster|pve-container|qemu-server|pve-qemu-kvm|proxmox-(default-)?kernel($|-)|proxmox-kernel-|pve-kernel-|pve-firewall|pve-ha-manager|pve-storage|pve-common|libpve-|openssh-server|apt|dpkg|systemd|ifupdown2|lvm2|thin-provisioning-tools|grub-|initramfs-tools|bash|coreutils|libc6)($|[-0-9])' \
             <<<"$removals" || true
     )"
 
@@ -511,7 +526,7 @@ remove_non_initial_manual_packages() {
     local -a candidates=()
     local -a safe=()
 
-    log "Возврат пакетного состава к исходной установке PVE"
+    log "Очистка пакетов, добавленных после установки PVE"
 
     while IFS= read -r pkg; do
         [[ -n "$pkg" ]] || continue
@@ -523,7 +538,11 @@ remove_non_initial_manual_packages() {
     if (( ${#candidates[@]} == 0 )); then
         ok "Дополнительных вручную установленных пакетов нет"
     else
-        info "Пакеты, которых не было в исходной установке: ${candidates[*]}"
+        if [[ -n "$INITIAL_STATUS_FILE" ]]; then
+            info "Пакеты, которых не было в исходной установке: ${candidates[*]}"
+        else
+            info "Пакеты, которые устанавливали наши сценарии и которые сейчас установлены: ${candidates[*]}"
+        fi
 
         for pkg in "${candidates[@]}"; do
             if assert_no_protected_package_removal "Удаление $pkg" purge -y "$pkg"; then
@@ -570,24 +589,14 @@ print_bootstrap_entrypoint() {
 
     log "Команда первого запуска bootstrap после очистки"
 
-    case "$BOOTSTRAP_FETCHER" in
-        wget)
-            printf 'wget -qO- %s | bash\n' "$url"
-            ;;
-        curl)
-            printf 'curl -fsSL %s | bash\n' "$url"
-            ;;
-        apt)
-            cat <<EOF_BOOTSTRAP
+    cat <<EOF_BOOTSTRAP
 apt-get update \
   -o Dir::Etc::sourcelist=/etc/apt/sources.list.d/debian.sources \
   -o Dir::Etc::sourceparts=- \
   -o APT::Get::List-Cleanup=0 && \
-apt-get install -y --no-install-recommends ca-certificates wget && \
-wget -qO- $url | bash
+apt-get install -y --no-install-recommends ca-certificates curl && \
+curl -fsSL $url | bash
 EOF_BOOTSTRAP
-            ;;
-    esac
 }
 
 verify_final_state() {
@@ -629,7 +638,9 @@ show_preserved_state() {
 - snippets удаляется из content types storage local;
 - сохранённый enterprise repository восстанавливается из *.disabled;
 - точный Ceph no-subscription шаблон возвращается к enterprise;
-- все вручную установленные после исходной установки пакеты удаляются, если APT-симуляция подтверждает, что это не ломает PVE.
+- при наличии снимка удаляются вручную добавленные после установки пакеты;
+- без снимка удаляется точный набор пакетов, который ставили наши старые сценарии;
+- любое удаление сначала проверяется APT-симуляцией на сохранность PVE.
 EOF_KEEP
 }
 
