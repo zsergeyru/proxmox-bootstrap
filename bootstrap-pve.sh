@@ -326,6 +326,49 @@ assert_owned_ct() {
     has_tag "$tags" "proxmox-bootstrap" || die "LXC $CTID не имеет tag proxmox-bootstrap"
 }
 
+ct_config_has_item() {
+    local value=$1 item=$2
+    tr ',' '\n' <<<"$value" | grep -Fxq "$item"
+}
+
+require_ct_value() {
+    local key=$1 expected=$2 actual
+    actual="$(ct_config_value "$key")"
+    [[ "$actual" == "$expected" ]] \
+        || die "LXC $CTID: $key='$actual', ожидается '$expected'"
+}
+
+verify_ct_contract() {
+    local features rootfs net0
+
+    assert_owned_ct || die "LXC $CTID отсутствует"
+
+    require_ct_value unprivileged 1
+    require_ct_value cores "$CT_CORES"
+    require_ct_value memory "$CT_MEMORY_MB"
+    require_ct_value swap "$CT_SWAP_MB"
+    require_ct_value onboot 1
+    require_ct_value protection 1
+
+    features="$(ct_config_value features)"
+    ct_config_has_item "$features" "nesting=1" \
+        || die "LXC $CTID: отсутствует feature nesting=1"
+    ct_config_has_item "$features" "keyctl=1" \
+        || die "LXC $CTID: отсутствует feature keyctl=1"
+
+    rootfs="$(ct_config_value rootfs)"
+    [[ "$rootfs" == "$CT_STORAGE:"* ]] \
+        || die "LXC $CTID: rootfs должен находиться в $CT_STORAGE"
+    ct_config_has_item "$rootfs" "size=${CT_DISK_GB}G" \
+        || die "LXC $CTID: размер rootfs должен быть ${CT_DISK_GB}G"
+
+    net0="$(ct_config_value net0)"
+    ct_config_has_item "$net0" "bridge=$CT_BRIDGE" \
+        || die "LXC $CTID: net0 должен использовать bridge=$CT_BRIDGE"
+
+    ok "Параметры LXC $CTID соответствуют контракту bootstrap"
+}
+
 build_net0() {
     if [[ "$CT_IP" == "dhcp" ]]; then
         printf 'name=eth0,bridge=%s,ip=dhcp,type=veth\n' "$CT_BRIDGE"
@@ -587,7 +630,7 @@ verify_infra_deployer() {
         || die "В 910 отсутствует infra-deployer-status"
 
     ct_exec env INFRA_DEPLOYER_COLOR="$BOOTSTRAP_COLOR" \
-        /usr/local/sbin/infra-deployer-status
+        /usr/local/sbin/infra-deployer-status --full
 
     ok "910 infra-deployer готов"
 }
@@ -791,6 +834,7 @@ main() {
 
     host_preflight
     ensure_infra_deployer_ct
+    verify_ct_contract
     ensure_ct_running
     wait_ct_network
 
