@@ -468,6 +468,29 @@ bootstrap_ct_os() {
     ok "Минимальная Debian-основа внутри LXC готова"
 }
 
+ensure_pve_name_resolution_in_ct() {
+    local node host_ip resolved_ip
+
+    node=$(hostname -s)
+    [[ "$node" =~ ^[A-Za-z0-9-]+$ ]]         || die "Некорректное имя PVE-узла: $node"
+
+    host_ip=$(getent ahostsv4 "$node" | awk 'NR == 1 {print $1}')
+    validate_ipv4 "$host_ip"         || die "Не удалось определить IPv4 PVE-узла '$node'"
+
+    resolved_ip="$(ct_exec getent ahostsv4 "$node" 2>/dev/null | awk 'NR == 1 {print $1}' || true)"
+    if [[ "$resolved_ip" == "$host_ip" ]]; then
+        ok "Имя PVE '$node' уже разрешается внутри LXC $CTID"
+        return
+    fi
+
+    ct_exec sh -c "awk '$2 != \"$node\" {print}' /etc/hosts > /etc/hosts.bootstrap && printf '%s %s\n' '$host_ip' '$node' >> /etc/hosts.bootstrap && cat /etc/hosts.bootstrap > /etc/hosts && rm -f /etc/hosts.bootstrap"
+
+    resolved_ip="$(ct_exec getent ahostsv4 "$node" 2>/dev/null | awk 'NR == 1 {print $1}' || true)"
+    [[ "$resolved_ip" == "$host_ip" ]]         || die "Не удалось настроить разрешение имени '$node' внутри LXC $CTID"
+
+    ok "Добавлено разрешение $node -> $host_ip внутри LXC $CTID"
+}
+
 install_pve_ca() {
     local src=/etc/pve/pve-root-ca.pem tmp node
     [[ "$MODE" != "check" ]] || return 0
@@ -483,6 +506,7 @@ install_pve_ca() {
     ct_exec update-ca-certificates >/dev/null
     rm -f "$tmp"
 
+    ensure_pve_name_resolution_in_ct
     node=$(hostname -s)
     ct_exec curl -fsS --connect-timeout 5 --max-time 15 \
         "https://$node:8006/api2/json/version" >/dev/null \
