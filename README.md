@@ -2,36 +2,27 @@
 
 Публичный bootstrap для первоначального развёртывания и обслуживания `910 infra-deployer` на Proxmox VE.
 
-## Скачать
-
-На PVE от `root`:
-
-~~~bash
-curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/infra-iac-redesign/bootstrap-pve.sh -o bootstrap-pve.sh
-chmod +x bootstrap-pve.sh
-~~~
-
 ## Запуск
 
 Обычная установка или повторное применение:
 
 ~~~bash
-./bootstrap-pve.sh
+curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/infra-iac-redesign/bootstrap-pve.sh | bash
 ~~~
 
 Справка:
 
 ~~~bash
-./bootstrap-pve.sh --help
+curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/infra-iac-redesign/bootstrap-pve.sh | bash -s -- --help
 ~~~
 
 Основные режимы:
 
 ~~~bash
-./bootstrap-pve.sh --check
-./bootstrap-pve.sh --recover
-./bootstrap-pve.sh --remove
-./bootstrap-pve.sh --purge
+curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/infra-iac-redesign/bootstrap-pve.sh | bash -s -- --check
+curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/infra-iac-redesign/bootstrap-pve.sh | bash -s -- --recover
+curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/infra-iac-redesign/bootstrap-pve.sh | bash -s -- --remove
+curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/infra-iac-redesign/bootstrap-pve.sh | bash -s -- --purge
 ~~~
 
 При первом запуске потребуется один раз добавить показанный GitHub Deploy Key в закрытый репозиторий как read-only.
