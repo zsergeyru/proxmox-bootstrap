@@ -40,38 +40,38 @@ C_RED=""
 C_CYAN=""
 
 if [[ "${INFRA_DEPLOYER_COLOR:-0}" == "1" && "${NO_COLOR:-}" == "" ]]; then
-    C_RESET="$(printf '\\033[0m')"
-    C_BOLD="$(printf '\\033[1m')"
-    C_GREEN="$(printf '\\033[32m')"
-    C_BLUE="$(printf '\\033[34m')"
-    C_RED="$(printf '\\033[31m')"
-    C_CYAN="$(printf '\\033[36m')"
+    C_RESET="$(printf '\033[0m')"
+    C_BOLD="$(printf '\033[1m')"
+    C_GREEN="$(printf '\033[32m')"
+    C_BLUE="$(printf '\033[34m')"
+    C_RED="$(printf '\033[31m')"
+    C_CYAN="$(printf '\033[36m')"
 fi
 
 write_log() {
     [[ -n "${LOG_FILE:-}" ]] || return 0
-    printf '[%s] %s\\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >>"$LOG_FILE"
+    printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >>"$LOG_FILE"
 }
 
 log() {
     write_log "ЭТАП: $*"
-    printf '\\n%s%s==> %s%s\\n' "$C_BOLD" "$C_BLUE" "$*" "$C_RESET"
+    printf '\n%s%s==> %s%s\n' "$C_BOLD" "$C_BLUE" "$*" "$C_RESET"
 }
 
 ok() {
     write_log "ОК: $*"
-    printf '%s%s[ОК]%s %s\\n' "$C_BOLD" "$C_GREEN" "$C_RESET" "$*"
+    printf '%s%s[ОК]%s %s\n' "$C_BOLD" "$C_GREEN" "$C_RESET" "$*"
 }
 
 info() {
     write_log "ИНФО: $*"
-    printf '%s%s[ИНФО]%s %s\\n' "$C_BOLD" "$C_CYAN" "$C_RESET" "$*"
+    printf '%s%s[ИНФО]%s %s\n' "$C_BOLD" "$C_CYAN" "$C_RESET" "$*"
 }
 
 die() {
     write_log "ОШИБКА: $*"
-    printf '\\n%s%sОШИБКА:%s %s\\n' "$C_BOLD" "$C_RED" "$C_RESET" "$*" >&2
-    [[ ! -s "${LOG_FILE:-}" ]] || printf 'Полный технический лог: %s\\n' "$LOG_FILE" >&2
+    printf '\n%s%sОШИБКА:%s %s\n' "$C_BOLD" "$C_RED" "$C_RESET" "$*" >&2
+    [[ ! -s "${LOG_FILE:-}" ]] || printf 'Полный технический лог: %s\n' "$LOG_FILE" >&2
     exit 1
 }
 
@@ -79,7 +79,7 @@ init_log() {
     install -d -o root -g root -m 0755 "$(dirname "$LOG_FILE")"
     touch "$LOG_FILE"
     chmod 0640 "$LOG_FILE"
-    printf '\\n===== bootstrap-910 %s %s =====\\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$PHASE" >>"$LOG_FILE"
+    printf '\n===== bootstrap-910 %s %s =====\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$PHASE" >>"$LOG_FILE"
 }
 
 run_logged() {
@@ -87,10 +87,10 @@ run_logged() {
     write_log "КОМАНДА: $*"
     "$@" >>"$LOG_FILE" 2>&1 || rc=$?
     if ((rc != 0)); then
-        printf '%s%sОШИБКА:%s команда завершилась с кодом %s\\n' "$C_BOLD" "$C_RED" "$C_RESET" "$rc" >&2
-        printf 'Последние строки лога:\\n' >&2
+        printf '%s%sОШИБКА:%s команда завершилась с кодом %s\n' "$C_BOLD" "$C_RED" "$C_RESET" "$rc" >&2
+        printf 'Последние строки лога:\n' >&2
         tail -n 25 "$LOG_FILE" >&2 || true
-        printf 'Полный технический лог: %s\\n' "$LOG_FILE" >&2
+        printf 'Полный технический лог: %s\n' "$LOG_FILE" >&2
         return "$rc"
     fi
 }
