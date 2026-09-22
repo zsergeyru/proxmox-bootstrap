@@ -993,19 +993,26 @@ checkout_private_project() {
 }
 
 run_private_setup() {
-    local setup revision
+    local setup revision installed_revision=""
     [[ "$MODE" != "check" ]] || return 0
-
-    if ct_exec test -f "$CT_COMPLETE_MARKER" && [[ "$MODE" != "recover" ]]; then
-        ok "Первоначальная настройка 910 уже завершена"
-        return
-    fi
 
     setup="$CT_PROJECT_DIR/$PRIVATE_SETUP_PATH"
     ct_exec test -f "$setup" \
         || die "В ветке $PRIVATE_BRANCH закрытого проекта отсутствует $PRIVATE_SETUP_PATH"
 
-    log "Передача управления настройке infra-deployer"
+    revision=$(ct_exec git -C "$CT_PROJECT_DIR" rev-parse HEAD)
+
+    if ct_exec test -f "$CT_COMPLETE_MARKER" && [[ "$MODE" != "recover" ]]; then
+        installed_revision="$(ct_exec sed -n 's/^project_revision=//p' "$CT_COMPLETE_MARKER" | head -n1)"
+        if [[ "$installed_revision" == "$revision" ]]; then
+            ok "910 уже использует текущую ревизию проекта: $revision"
+            return
+        fi
+        log "Обновление infra-deployer до ревизии $revision"
+    else
+        log "Передача управления настройке infra-deployer"
+    fi
+
     local recover_flag=0
     [[ "$MODE" == "recover" ]] && recover_flag=1
 
@@ -1019,7 +1026,6 @@ run_private_setup() {
     ct_exec rm -f "$CT_SECRET_FILE"
     ct_exec install -d -m 0755 /var/lib/infra-deployer
 
-    revision=$(ct_exec git -C "$CT_PROJECT_DIR" rev-parse HEAD)
     ct_exec sh -c "cat > '$CT_COMPLETE_MARKER' <<EOF_MARKER
 bootstrap=complete
 public_bootstrap_version=$PUBLIC_BOOTSTRAP_VERSION
@@ -1028,7 +1034,11 @@ project_revision=$revision
 EOF_MARKER
 chmod 0600 '$CT_COMPLETE_MARKER'"
 
-    ok "Первоначальная настройка 910 завершена"
+    if [[ -n "$installed_revision" ]]; then
+        ok "infra-deployer обновлён до ревизии $revision"
+    else
+        ok "Первоначальная настройка 910 завершена"
+    fi
 }
 
 check_ready_state() {
@@ -1097,7 +1107,16 @@ main() {
 
     if ct_exec test -f "$CT_COMPLETE_MARKER" && [[ "$MODE" == "apply" ]]; then
         ensure_api_identity
+        ensure_github_key
+        ensure_private_repo_access
+        checkout_private_project
+        run_private_setup
         check_ready_state
+
+        printf '\n%s%sPUBLIC BOOTSTRAP УСПЕШНО ЗАВЕРШЁН%s\n' \
+            "$C_BOLD" "$C_GREEN" "$C_RESET"
+        printf 'Дальнейшее управление инфраструктурой выполняется из LXC %s %s.\n' \
+            "$CTID" "$CT_HOSTNAME"
         exit 0
     fi
 
