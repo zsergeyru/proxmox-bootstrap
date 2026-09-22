@@ -441,9 +441,8 @@ bootstrap_ct_os() {
     ct_exec env DEBIAN_FRONTEND=noninteractive apt-get update
     ct_exec env DEBIAN_FRONTEND=noninteractive \
         apt-get install -y --no-install-recommends \
-        ca-certificates curl git jq openssh-client openssh-server
+        ca-certificates curl git jq openssh-client
 
-    ct_exec systemctl enable --now ssh >/dev/null
     ok "Минимальная Debian-основа внутри LXC готова"
 }
 
@@ -478,6 +477,18 @@ api_user_exists() {
 api_token_exists() {
     pveum user token list "$API_USER" --output-format json 2>/dev/null \
         | jq -e --arg id "$API_TOKEN_NAME" '.[] | select(.tokenid == $id)' >/dev/null
+}
+
+api_token_privsep() {
+    pveum user token list "$API_USER" --output-format json 2>/dev/null \
+        | jq -r --arg id "$API_TOKEN_NAME" '.[] | select(.tokenid == $id) | .privsep'
+}
+
+assert_api_token_privsep() {
+    local privsep
+    privsep=$(api_token_privsep)
+    [[ "$privsep" == "1" ]] \
+        || die "PVE API token $API_TOKEN_ID должен иметь privsep=1"
 }
 
 ensure_api_user() {
@@ -522,7 +533,11 @@ PVE_API_TOKEN_SECRET=$secret
 EOF_TOKEN
 
     ct_exec install -d -m 0700 "$CT_BOOTSTRAP_DIR"
-    pct push "$CTID" "$tmp" "$CT_SECRET_FILE" --user 0 --group 0 --perms 0600
+    if ! pct push "$CTID" "$tmp" "$CT_SECRET_FILE" --user 0 --group 0 --perms 0600; then
+        rm -f "$tmp"
+        pveum user token remove "$API_USER" "$API_TOKEN_NAME" >/dev/null 2>&1 || true
+        die "Не удалось передать API token secret в 910; созданный token удалён"
+    fi
     rm -f "$tmp"
 
     ok "Создан и передан в 910 API token $API_TOKEN_ID"
@@ -532,6 +547,7 @@ ensure_api_identity() {
     if ct_exec test -f "$CT_COMPLETE_MARKER" && [[ "$MODE" == "apply" ]]; then
         api_user_exists || die "PVE user $API_USER потерян после завершённого bootstrap. Используйте --recover."
         api_token_exists || die "PVE API token $API_TOKEN_ID потерян после завершённого bootstrap. Используйте --recover."
+        assert_api_token_privsep
         ok "Используется существующий PVE API identity"
         return
     fi
@@ -540,6 +556,7 @@ ensure_api_identity() {
 
     if [[ "$MODE" == "check" ]]; then
         api_token_exists || die "PVE API token $API_TOKEN_ID отсутствует"
+        assert_api_token_privsep
         ok "PVE API identity существует"
         return
     fi
@@ -557,11 +574,13 @@ ensure_api_identity() {
     fi
 
     if ct_exec test -f "$CT_COMPLETE_MARKER"; then
+        assert_api_token_privsep
         ok "Используется существующий PVE API token"
         return
     fi
 
     if ct_exec test -s "$CT_SECRET_FILE"; then
+        assert_api_token_privsep
         ok "API token уже подготовлен для незавершённой настройки"
         return
     fi
@@ -695,7 +714,7 @@ chmod 0600 '$CT_COMPLETE_MARKER'"
 }
 
 check_ready_state() {
-    local status
+    local status node
     log "Проверка состояния"
 
     assert_owned_ct || die "LXC $CTID отсутствует"
@@ -706,10 +725,16 @@ check_ready_state() {
 
     api_user_exists || die "PVE user $API_USER отсутствует"
     api_token_exists || die "PVE API token $API_TOKEN_ID отсутствует"
+    assert_api_token_privsep
     ct_exec test -f "$CT_COMPLETE_MARKER" \
         || die "LXC $CTID существует, но первоначальная настройка ещё не завершена"
     ct_exec ip -4 route show default | grep -q '^default ' \
         || die "В 910 нет IPv4 default route"
+
+    node=$(hostname -s)
+    ct_exec curl -fsS --connect-timeout 5 --max-time 15 \
+        "https://$node:8006/api2/json/version" >/dev/null \
+        || die "910 не может проверить TLS соединение с PVE API"
 
     ok "910 infra-deployer соответствует bootstrap-контракту"
 }
@@ -720,6 +745,7 @@ main() {
 
     parse_args "$@"
     require_root_and_pve
+    info "Public Bootstrap v$PUBLIC_BOOTSTRAP_VERSION, режим: $MODE"
     acquire_lock
     ensure_host_packages
     host_preflight
