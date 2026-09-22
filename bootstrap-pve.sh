@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# Единый линейный bootstrap для Proxmox VE.
-# Выполняется только на PVE и последовательно подготавливает LXC 910.
+# Единый bootstrap для Proxmox VE.
+# Выполняется только на PVE. Отдельные этапы оформлены функциями,
+# а main() задаёт понятную последовательность подготовки LXC 910.
 
 PUBLIC_BOOTSTRAP_VERSION="3.2.0-dev1"
 
@@ -67,6 +68,8 @@ ok()   { printf '%s%s[ОК]%s %s\n' "$C_BOLD" "$C_GREEN" "$C_RESET" "$*"; }
 info() { printf '%s%s[ИНФО]%s %s\n' "$C_BOLD" "$C_CYAN" "$C_RESET" "$*"; }
 warn() { printf '%s%s[ПРЕДУПРЕЖДЕНИЕ]%s %s\n' "$C_BOLD" "$C_YELLOW" "$C_RESET" "$*" >&2; }
 die()  { printf '\n%s%sОШИБКА:%s %s\n' "$C_BOLD" "$C_RED" "$C_RESET" "$*" >&2; exit 1; }
+
+# --- Параметры запуска -----------------------------------------------------
 
 usage() {
     cat <<'USAGE'
@@ -159,6 +162,8 @@ parse_args() {
 
     [[ "$PROJECT_BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]]         || die "Некорректное имя ветки проекта: $PROJECT_BRANCH"
 }
+
+# --- PVE ------------------------------------------------------------------
 
 require_root_and_pve() {
     local cmd
@@ -262,6 +267,8 @@ ensure_debian13_template() {
     ok "Debian 13 LXC template готов: $local_ref" >&2
     printf '%s\n' "$local_ref"
 }
+
+# --- LXC 910 --------------------------------------------------------------
 
 ct_exists() {
     pct config "$CTID" >/dev/null 2>&1
@@ -373,6 +380,8 @@ ct_run_logged() {
     fi
 }
 
+# --- GitHub и закрытый проект ---------------------------------------------
+
 ensure_host_github_key() {
     install -d -o root -g root -m 0700 "$HOST_BOOTSTRAP_DIR"
 
@@ -400,7 +409,7 @@ ensure_host_github_key() {
     ok "GitHub Deploy Key создан и сохранён на PVE"
 }
 
-prepare_ct_os() {
+prepare_infra_deployer_os() {
     log "Минимальная подготовка Debian внутри LXC $CTID"
 
     init_ct_log
@@ -499,7 +508,9 @@ checkout_private_project() {
     ok "Закрытый проект получен внутри 910"
 }
 
-run_host_access() {
+# --- Передача управления закрытому проекту --------------------------------
+
+configure_pve_access() {
     local source="$CT_PROJECT_DIR/$PRIVATE_HOST_ACCESS_PATH"
 
     ct_exec test -s "$source" \
@@ -517,7 +528,7 @@ run_host_access() {
     ok "Ограниченный доступ 910 к PVE подготовлен"
 }
 
-run_private_setup() {
+configure_infra_deployer() {
     local setup="$CT_PROJECT_DIR/$PRIVATE_SETUP_PATH"
     local recover_flag=0
 
@@ -541,7 +552,7 @@ run_private_setup() {
     ok "Внутренняя настройка 910 завершена"
 }
 
-check_ready_state() {
+verify_infra_deployer() {
     local status
 
     assert_owned_ct || die "LXC $CTID отсутствует"
@@ -557,43 +568,53 @@ check_ready_state() {
     ok "910 infra-deployer готов"
 }
 
-main() {
+ensure_infra_deployer_ct() {
     local template_ref=""
-
-    parse_args "$@"
-    require_root_and_pve
-    info "Public Bootstrap v$PUBLIC_BOOTSTRAP_VERSION, режим: $MODE"
-    acquire_lock
-    host_preflight
 
     if assert_owned_ct; then
         info "Найден принадлежащий bootstrap LXC $CTID"
-    else
-        [[ "$MODE" != "check" ]] || die "LXC $CTID отсутствует"
-        template_ref=$(ensure_debian13_template)
-        create_infra_deployer "$template_ref"
+        return
     fi
 
+    [[ "$MODE" != "check" ]] || die "LXC $CTID отсутствует"
+
+    template_ref=$(ensure_debian13_template)
+    create_infra_deployer "$template_ref"
+}
+
+report_success() {
+    printf '\n%s%sPUBLIC BOOTSTRAP УСПЕШНО ЗАВЕРШЁН%s\n' \
+        "$C_BOLD" "$C_GREEN" "$C_RESET"
+    printf 'GitHub Deploy Key хранится на PVE: %s\n' "$HOST_GITHUB_KEY"
+}
+
+main() {
+    parse_args "$@"
+
+    require_root_and_pve
+    info "Public Bootstrap v$PUBLIC_BOOTSTRAP_VERSION, режим: $MODE"
+
+    acquire_lock
+    host_preflight
+    ensure_infra_deployer_ct
     ensure_ct_running
     wait_ct_network
 
     if [[ "$MODE" == "check" ]]; then
-        check_ready_state
-        exit 0
+        verify_infra_deployer
+        return
     fi
 
     ensure_host_github_key
-    prepare_ct_os
+    prepare_infra_deployer_os
     push_github_key_to_ct
     ensure_private_repo_access
     checkout_private_project
-    run_host_access
-    run_private_setup
-    check_ready_state
+    configure_pve_access
+    configure_infra_deployer
+    verify_infra_deployer
 
-    printf '\n%s%sPUBLIC BOOTSTRAP УСПЕШНО ЗАВЕРШЁН%s\n' \
-        "$C_BOLD" "$C_GREEN" "$C_RESET"
-    printf 'GitHub Deploy Key хранится на PVE: %s\n' "$HOST_GITHUB_KEY"
+    report_success
 }
 
 main "$@"
