@@ -23,14 +23,16 @@ jobs:
         run: |
           bash -n bootstrap-pve.sh
           bash -n reset-pve-test-state.sh
+          bash -n reset-pve-clean-slate.sh
 
       - name: Check help
         run: |
           bash bootstrap-pve.sh --help >/dev/null
           bash reset-pve-test-state.sh --help >/dev/null
+          bash reset-pve-clean-slate.sh --help >/dev/null
 
       - name: ShellCheck
-        run: shellcheck -S warning bootstrap-pve.sh reset-pve-test-state.sh
+        run: shellcheck -S warning bootstrap-pve.sh reset-pve-test-state.sh reset-pve-clean-slate.sh
 
       - name: Check public bootstrap boundary
         run: |
