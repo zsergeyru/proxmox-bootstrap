@@ -253,8 +253,8 @@ remove_empty_pools() {
         remaining_acls="$(
             pveum acl list --output-format json                 | jq -r --arg path "/pool/$poolid"                     '[.[] | select(.path == $path)] | length'
         )"
-        if (( remaining_acls > 0 )); then
-            warn "Pool $poolid имеет оставшиеся ACL и сохранён."
+        if (( remaining_acls > 0 && APPLY == 1 )); then
+            warn "Pool $poolid имеет оставшиеся ACL после их удаления и сохранён."
             continue
         fi
 
