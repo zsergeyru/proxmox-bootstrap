@@ -221,7 +221,7 @@ pve_role_exists() {
 
 remove_project_role() {
     local role=$1
-    pve_role_exists "$role" || return
+    pve_role_exists "$role" || return 0
     run "удалить PVE role $role" pveum role delete "$role"
 }
 
@@ -311,7 +311,7 @@ remove_empty_pools() {
 remove_linux_deployer() {
     local entry home shell
 
-    getent passwd pvedeploy >/dev/null 2>&1 || return
+    getent passwd pvedeploy >/dev/null 2>&1 || return 0
     entry="$(getent passwd pvedeploy)"
     home="$(cut -d: -f6 <<<"$entry")"
     shell="$(cut -d: -f7 <<<"$entry")"
@@ -330,7 +330,7 @@ remove_linux_deployer() {
 
 remove_path() {
     local path=$1 description=$2
-    [[ -e "$path" || -L "$path" ]] || return
+    [[ -e "$path" || -L "$path" ]] || return 0
     run "$description: $path" rm -rf -- "$path"
 }
 
@@ -596,7 +596,7 @@ EOF_BOOTSTRAP
 verify_final_state() {
     local extra_guests extra_users extra_groups
 
-    (( APPLY )) || return
+    (( APPLY )) || return 0
 
     log "Итоговая проверка"
 
