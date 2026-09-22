@@ -37,14 +37,19 @@ jobs:
       - name: Check public bootstrap boundary
         run: |
           grep -q 'PRIVATE_HOST_ACCESS_PATH="scripts/infra-deployer/pve-bootstrap-access.sh"' bootstrap-pve.sh
-          grep -q 'for pkg in jq util-linux' bootstrap-pve.sh
-          grep -q 'Dir::Etc::sourcelist=.*debian.sources' bootstrap-pve.sh
+          grep -q 'local config="/etc/pve/storage.cfg"' bootstrap-pve.sh
+          if grep -q 'ensure_host_packages' bootstrap-pve.sh; then
+            echo "Public bootstrap must not install packages on the PVE host"
+            exit 1
+          fi
           python3 - <<'PY'
           from pathlib import Path
           text = Path("bootstrap-pve.sh").read_text()
-          main = text[text.index("main() {"):]
-          if main.index("ensure_host_packages") > main.index("acquire_lock"):
-              raise SystemExit("host packages must be prepared before flock is used")
+          host_part = text[:text.index("bootstrap_ct_os() {")]
+          forbidden = ("apt-get install", "apt install", "| jq", "jq -")
+          for item in forbidden:
+              if item in host_part:
+                  raise SystemExit(f"host bootstrap must not depend on/install extra packages: {item}")
           PY
           if grep -Eq 'PVEVMAdmin|PVEDatastoreUser|PVESDNUser|PVETemplateUser|InfraManagedGuest|root@pam!infra-deployer' bootstrap-pve.sh; then
             echo "PVE access policy must stay in the private project"
