@@ -20,13 +20,17 @@ jobs:
           sudo apt-get install -y shellcheck
 
       - name: Validate shell syntax
-        run: bash -n bootstrap-pve.sh
+        run: |
+          bash -n bootstrap-pve.sh
+          bash -n reset-pve-test-state.sh
 
-      - name: Check bootstrap help
-        run: bash bootstrap-pve.sh --help >/dev/null
+      - name: Check help
+        run: |
+          bash bootstrap-pve.sh --help >/dev/null
+          bash reset-pve-test-state.sh --help >/dev/null
 
       - name: ShellCheck
-        run: shellcheck -S warning bootstrap-pve.sh
+        run: shellcheck -S warning bootstrap-pve.sh reset-pve-test-state.sh
 
       - name: Check public bootstrap boundary
         run: |
