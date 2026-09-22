@@ -206,8 +206,8 @@ storage_exists() {
 
 storage_has_content() {
     local storage=$1 content=$2
-    pvesm config "$storage" 2>/dev/null \
-        | sed -n 's/^content[[:space:]]\+//p' \
+    pvesh get "/storage/$storage" --output-format json 2>/dev/null \
+        | jq -r '.content // ""' \
         | tr ',' '\n' \
         | grep -qx "$content"
 }
@@ -522,6 +522,13 @@ EOF_TOKEN
 }
 
 ensure_api_identity() {
+    if ct_exec test -f "$CT_COMPLETE_MARKER" && [[ "$MODE" == "apply" ]]; then
+        api_user_exists || die "PVE user $API_USER потерян после завершённого bootstrap. Используйте --recover."
+        api_token_exists || die "PVE API token $API_TOKEN_ID потерян после завершённого bootstrap. Используйте --recover."
+        ok "Используется существующий PVE API identity"
+        return
+    fi
+
     ensure_api_user
 
     if [[ "$MODE" == "check" ]]; then
@@ -702,6 +709,7 @@ check_ready_state() {
 
 main() {
     local template_ref=""
+    local ct_was_created=0
 
     parse_args "$@"
     require_root_and_pve
@@ -721,19 +729,25 @@ main() {
         backup_host_config
         template_ref=$(ensure_debian13_template)
         create_infra_deployer "$template_ref"
+        ct_was_created=1
     fi
 
     ensure_ct_running
     wait_ct_network
-    bootstrap_ct_os
-    install_pve_ca
-    ensure_api_identity
 
-    if ct_exec test -f "$CT_COMPLETE_MARKER" && [[ "$MODE" != "recover" ]]; then
+    if ct_exec test -f "$CT_COMPLETE_MARKER" && [[ "$MODE" == "apply" ]]; then
+        ensure_api_identity
         check_ready_state
         exit 0
     fi
 
+    if ((ct_was_created == 0)); then
+        backup_host_config
+    fi
+
+    bootstrap_ct_os
+    install_pve_ca
+    ensure_api_identity
     ensure_github_key
     ensure_private_repo_access
     checkout_private_project
