@@ -41,8 +41,14 @@ jobs:
           grep -q 'PRIVATE_REPO="git@github.com:zsergeyru/proxmox.git"' bootstrap-pve.sh
           grep -q 'PRIVATE_SETUP_PATH="scripts/infra-deployer/setup.sh"' bootstrap-pve.sh
           grep -q 'PRIVATE_HOST_ACCESS_PATH="scripts/infra-deployer/pve-bootstrap-access.sh"' bootstrap-pve.sh
-          grep -q 'trap cleanup_host_runtime EXIT' bootstrap-pve.sh
+          grep -q 'exec 9>"\$LOCK_FILE"' bootstrap-pve.sh
+          grep -q 'flock -n 9' bootstrap-pve.sh
           grep -q 'pct push "\$CTID" "\$HOST_GITHUB_KEY" "\$CT_GITHUB_KEY"' bootstrap-pve.sh
+
+          if grep -Eq 'cleanup_host_runtime|rm[[:space:]].*LOCK_FILE|rm[[:space:]].*proxmox-bootstrap\.lock' bootstrap-pve.sh; then
+            echo "Bootstrap lock file must remain persistent; flock is released by closing fd 9"
+            exit 1
+          fi
 
           if grep -Eq 'GUEST_BOOTSTRAP_REF|GUEST_BOOTSTRAP_URL|bootstrap-910\.sh' bootstrap-pve.sh; then
             echo "Only one public bootstrap file is allowed"
