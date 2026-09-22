@@ -139,8 +139,9 @@ ACL этого token
 ~~~text
 /root/.config/proxmox-bootstrap/
 GitHub Deploy Key
-Debian 13 LXC template
 ~~~
+
+Если Debian 13 template был скачан bootstrap, он удаляется.
 
 Это удобно, если 910 нужно пересоздать: новый контейнер получит тот же GitHub Deploy Key.
 
@@ -155,10 +156,9 @@ bootstrap-pve.sh --purge
 ~~~text
 /root/.config/proxmox-bootstrap/
 GitHub Deploy Key
-Debian 13 LXC template, если bootstrap ранее отметил его как скачанный им
 ~~~
 
-Чужой или заранее существовавший Debian template автоматически не удаляется.
+Debian 13 template, скачанный самим bootstrap, считается временным: после успешного создания 910 он удаляется сразу. Если установка была прервана, такой template также удаляется при --remove и --purge. Чужой или заранее существовавший template не удаляется.
 
 Оба режима защищают чужие объекты: VM с VMID 910, LXC без bootstrap-меток, непустой pool `managed`, VM 100 HAOS и хранилище `backup` не удаляются.
 
