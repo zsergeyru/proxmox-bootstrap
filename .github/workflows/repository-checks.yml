@@ -54,9 +54,13 @@ jobs:
             exit 1
           fi
 
-          if grep -Eq 'apt(-get)?[[:space:]]+install' bootstrap-pve.sh | grep -v 'ct_run_logged'; then
-            true
-          fi
+          grep -q '^main() {' bootstrap-pve.sh
+          grep -q 'ensure_infra_deployer_ct' bootstrap-pve.sh
+          grep -q 'ensure_host_github_key' bootstrap-pve.sh
+          grep -q 'checkout_private_project' bootstrap-pve.sh
+          grep -q 'configure_pve_access' bootstrap-pve.sh
+          grep -q 'configure_infra_deployer' bootstrap-pve.sh
+          grep -q 'verify_infra_deployer' bootstrap-pve.sh
 
       - name: Check whitespace errors
         run: git diff --check
