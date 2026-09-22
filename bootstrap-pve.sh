@@ -728,8 +728,10 @@ remove_owned_template() {
     if pveam list "$TEMPLATE_STORAGE" 2>/dev/null \
         | awk -v volume="$volume" '$1 == volume { found=1 } END { exit(found ? 0 : 1) }'; then
         pveam remove "$volume"
-        ok "Debian template bootstrap удалён: $volume"
+        ok "Временный Debian template bootstrap удалён: $volume"
     fi
+
+    rm -f -- "$HOST_TEMPLATE_MARKER"
 }
 
 remove_bootstrap() {
@@ -738,14 +740,14 @@ remove_bootstrap() {
     remove_infra_deployer_ct
     remove_api_token_access
     remove_managed_pool_if_empty
+    remove_owned_template
 
     if ((full)); then
         log "Полное удаление bootstrap-состояния"
-        remove_owned_template
         rm -rf -- "$HOST_BOOTSTRAP_DIR"
         ok "Постоянное bootstrap-состояние на PVE удалено"
     else
-        ok "Мягкое удаление завершено; GitHub key и Debian template сохранены"
+        ok "Мягкое удаление завершено; GitHub Deploy Key сохранён"
     fi
 }
 ensure_infra_deployer_ct() {
@@ -760,6 +762,7 @@ ensure_infra_deployer_ct() {
 
     template_ref=$(ensure_debian13_template)
     create_infra_deployer "$template_ref"
+    remove_owned_template
 }
 
 report_success() {
