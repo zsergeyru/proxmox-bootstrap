@@ -167,11 +167,17 @@ require_root_and_pve() {
     ok "Proxmox VE обнаружен"
 }
 
+cleanup_host_runtime() {
+    rm -rf -- "$HOST_TMP_DIR"
+    rm -f -- "$LOCK_FILE"
+}
+
 acquire_lock() {
     command -v flock >/dev/null 2>&1 || die "Не найдена команда flock"
     install -d -m 0755 /run/lock
     exec 9>"$LOCK_FILE"
     flock -n 9 || die "Другой bootstrap уже выполняется"
+    trap cleanup_host_runtime EXIT
     ok "Получена блокировка bootstrap"
 }
 
@@ -489,12 +495,12 @@ run_host_access() {
     install -d -o root -g root -m 0700 "$HOST_TMP_DIR"
     rm -f "$host_script"
     pct pull "$CTID" "$source" "$host_script"
-    chmod 0700 "$host_script"
+    chmod 0600 "$host_script"
 
     INFRA_DEPLOYER_CTID="$CTID" \
     INFRA_DEPLOYER_MODE="$MODE" \
     INFRA_DEPLOYER_SECRET_FILE="$CT_SECRET_FILE" \
-        "$host_script"
+        bash "$host_script"
 
     rm -f "$host_script"
 }
