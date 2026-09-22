@@ -1,56 +1,63 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# =============================================================================
-# Public Bootstrap для Proxmox VE
-# =============================================================================
-# Первый запуск сразу создаёт постоянный root-only read-only GitHub Deploy Key,
-# получает private zsergeyru/proxmox и передаёт управление PVE Configuration.
-# Повторный запуск использует тот же credential, обновляет canonical private
-# checkout и снова запускает актуальную PVE Configuration.
+# Public Bootstrap для Proxmox VE.
+# Его область: минимальная проверка PVE и специальный LXC 910 infra-deployer.
+# Остальная инфраструктура управляется уже из 910.
 
-PUBLIC_BOOTSTRAP_VERSION="1.0.0"
+PUBLIC_BOOTSTRAP_VERSION="2.0.0-dev1"
+
+CTID=910
+CT_HOSTNAME="infra-deployer"
+CT_CORES=2
+CT_MEMORY_MB=2048
+CT_SWAP_MB=512
+CT_DISK_GB=32
+CT_STORAGE="local-lvm"
+CT_BRIDGE="vmbr0"
+TEMPLATE_STORAGE="local"
+
+API_USER="infra-deployer@pve"
+API_TOKEN_NAME="automation"
+API_TOKEN_ID="infra-deployer@pve!automation"
 
 PRIVATE_REPO="git@github.com:zsergeyru/proxmox.git"
-PRIVATE_BRANCH="main"
-DEPLOY_USER="pvedeploy"
+PRIVATE_BRANCH="infra-iac-redesign"
+PRIVATE_SETUP_PATH="scripts/infra-deployer/setup.sh"
 
-BOOTSTRAP_TEMP_DIR="/var/lib/proxmox-bootstrap"
-TEMP_REPO="${BOOTSTRAP_TEMP_DIR}/private-repo"
+LOCK_FILE="/run/lock/proxmox-bootstrap.lock"
+BACKUP_ROOT="/var/backups/proxmox-bootstrap"
+HOST_TMP_DIR="/run/proxmox-bootstrap"
 
-# Только для безопасного продолжения незавершённого запуска Public Bootstrap v11.
-# v13 никогда не создаёт эти файлы и удаляет их после успешной миграции.
-LEGACY_BOOTSTRAP_KEY_FILE="${BOOTSTRAP_TEMP_DIR}/github_proxmox_repo_ed25519"
-LEGACY_BOOTSTRAP_KEY_PUB_FILE="${LEGACY_BOOTSTRAP_KEY_FILE}.pub"
-LEGACY_BOOTSTRAP_KNOWN_HOSTS="${BOOTSTRAP_TEMP_DIR}/known_hosts"
-LEGACY_BOOTSTRAP_SSH_CONFIG="${BOOTSTRAP_TEMP_DIR}/ssh_config"
+CT_BOOTSTRAP_DIR="/root/.infra-deployer-bootstrap"
+CT_SECRET_FILE="/root/.infra-deployer-bootstrap/pve-api.env"
+CT_GITHUB_KEY="/root/.ssh/github_proxmox_repo_ed25519"
+CT_GITHUB_PUB="/root/.ssh/github_proxmox_repo_ed25519.pub"
+CT_GITHUB_KNOWN_HOSTS="/root/.ssh/github_known_hosts"
+CT_GITHUB_SSH_CONFIG="/root/.ssh/github_config"
+CT_PROJECT_DIR="/var/lib/infra-deployer/bootstrap-repo"
+CT_COMPLETE_MARKER="/var/lib/infra-deployer/bootstrap-complete"
 
-PERMANENT_CONFIG_DIR="/etc/proxmox-deployer"
-PERMANENT_SSH_DIR="${PERMANENT_CONFIG_DIR}/ssh"
-PERMANENT_KEY_FILE="${PERMANENT_SSH_DIR}/github_proxmox_repo_ed25519"
-PERMANENT_KEY_PUB_FILE="${PERMANENT_KEY_FILE}.pub"
-PERMANENT_KNOWN_HOSTS="${PERMANENT_SSH_DIR}/known_hosts"
-PERMANENT_SSH_CONFIG="${PERMANENT_SSH_DIR}/config"
+MODE="apply"
+CT_IP="dhcp"
+CT_GATEWAY=""
 
-PERMANENT_RUNTIME_DIR="/var/lib/proxmox-deployer"
-PERMANENT_STATE_DIR="${PERMANENT_RUNTIME_DIR}/state"
-COMPLETE_MARKER="${PERMANENT_STATE_DIR}/bootstrap-complete"
-PERMANENT_REPO="${PERMANENT_RUNTIME_DIR}/repo"
-LOCK_FILE="/run/lock/proxmox-orchestration.lock"
-PVE_CONFIGURATION_CANONICAL="${PERMANENT_REPO}/scripts/pve/setup/configure-pve.sh"
-PVE_CONFIGURATION_VERSION_FILE="${PERMANENT_REPO}/scripts/pve/setup/lib/00-common.sh"
+C_RESET=""
+C_BOLD=""
+C_GREEN=""
+C_BLUE=""
+C_YELLOW=""
+C_RED=""
+C_CYAN=""
 
-FORWARD_ARGS=()
-
-COLOR_ENABLED=0
-if [[ -t 1 && -z "${NO_COLOR:-}" && "${TERM:-dumb}" != "dumb" ]]; then
-    COLOR_ENABLED=1
-fi
-if (( COLOR_ENABLED )); then
-    C_RESET=$'\033[0m'; C_BOLD=$'\033[1m'; C_BLUE=$'\033[34m'; C_GREEN=$'\033[32m'
-    C_YELLOW=$'\033[33m'; C_RED=$'\033[31m'; C_CYAN=$'\033[36m'; C_MAGENTA=$'\033[35m'
-else
-    C_RESET="" C_BOLD="" C_BLUE="" C_GREEN="" C_YELLOW="" C_RED="" C_CYAN="" C_MAGENTA=""
+if [[ -t 1 && "$(printenv NO_COLOR 2>/dev/null || true)" == "" && "$(printenv TERM 2>/dev/null || true)" != "dumb" ]]; then
+    C_RESET=$'\033[0m'
+    C_BOLD=$'\033[1m'
+    C_GREEN=$'\033[32m'
+    C_BLUE=$'\033[34m'
+    C_YELLOW=$'\033[33m'
+    C_RED=$'\033[31m'
+    C_CYAN=$'\033[36m'
 fi
 
 log()  { printf '\n%s%s==> %s%s\n' "$C_BOLD" "$C_BLUE" "$*" "$C_RESET"; }
@@ -59,509 +66,685 @@ info() { printf '%s%s[ИНФО]%s %s\n' "$C_BOLD" "$C_CYAN" "$C_RESET" "$*"; }
 warn() { printf '%s%s[ПРЕДУПРЕЖДЕНИЕ]%s %s\n' "$C_BOLD" "$C_YELLOW" "$C_RESET" "$*" >&2; }
 die()  { printf '\n%s%sОШИБКА:%s %s\n' "$C_BOLD" "$C_RED" "$C_RESET" "$*" >&2; exit 1; }
 
-bootstrap_banner_border() {
-    local left=$1 right=$2 rule=''
-    printf -v rule '%*s' 68 ''
-    rule=${rule// /─}
-    printf '%s%s%s\n' "$left" "$rule" "$right"
-}
-
-bootstrap_banner_line() {
-    local text=$1 width=66 pad=''
-    local LC_ALL=C.UTF-8
-    if (( ${#text} > width )); then
-        printf '│ %s │\n' "$text"
-        return
-    fi
-    printf -v pad '%*s' "$((width - ${#text}))" ''
-    printf '│ %s%s │\n' "$text" "$pad"
-}
-
-bootstrap_mode() {
-    printf '%s%s[РЕЖИМ]%s %s\n' "$C_BOLD" "$C_MAGENTA" "$C_RESET" "$*"
-}
-
-show_bootstrap_banner() {
-    local arg
-    printf '\n%s%s' "$C_BOLD" "$C_CYAN"
-    bootstrap_banner_border '┌' '┐'
-    bootstrap_banner_line 'Proxmox Project — Public Bootstrap'
-    bootstrap_banner_line ''
-    bootstrap_banner_line 'Подготавливает host, обновляет root-trusted private repo'
-    bootstrap_banner_line 'и запускает PVE Configuration.'
-    bootstrap_banner_line ''
-    bootstrap_banner_line "Public Bootstrap: v${PUBLIC_BOOTSTRAP_VERSION}"
-    bootstrap_banner_border '└' '┘'
-    printf '%s' "$C_RESET"
-
-    for arg in "${FORWARD_ARGS[@]}"; do
-        case "$arg" in
-            --smoke-test-template)
-                bootstrap_mode 'Full Clone smoke-test template 9000 через временную VM 9099'
-                ;;
-            --update-system)
-                bootstrap_mode 'Включено полное обновление Proxmox/Debian'
-                ;;
-        esac
-    done
-}
-
-show_handoff_banner() {
-    printf '\n%s%s%s\n' "$C_BOLD" "$C_CYAN" '════════════════════════════════════════════════════════════════════'
-    printf ' Public Bootstrap завершил подготовку.\n'
-    printf ' Передача управления PVE Configuration...\n'
-    printf '%s%s\n' '════════════════════════════════════════════════════════════════════' "$C_RESET"
-}
-
 usage() {
     cat <<'USAGE'
 Использование:
-  bootstrap-pve.sh [--update-system] [--smoke-test-template] [--help]
+  bootstrap-pve.sh [параметры]
 
-Public Bootstrap — публичная точка входа проекта Proxmox.
+Режимы:
+  без параметра режима     создать или проверить 910 infra-deployer
+  --check                  только проверить, ничего не менять
+  --recover                явное восстановление/ротация bootstrap credentials
 
-Первый запуск:
-  - создаёт постоянный root-only read-only GitHub Deploy Key;
-  - получает private zsergeyru/proxmox;
-  - запускает scripts/pve/setup/configure-pve.sh.
+Сеть 910:
+  по умолчанию             DHCP
+  --ip CIDR                статический IPv4, например 192.168.1.90/24
+  --gateway IPv4           шлюз для статического IPv4
 
-Повторный запуск или продолжение незавершённого первого запуска:
-  - всегда использует тот же постоянный root-only read-only Deploy Key;
-  - новый временный GitHub Deploy Key не создаёт;
-  - обновляет root-owned /var/lib/proxmox-deployer/repo;
-  - запускает актуальную PVE Configuration.
+Проект:
+  --project-branch NAME    ветка закрытого проекта
+                           по умолчанию infra-iac-redesign
 
-Public Bootstrap и PVE Configuration используют одну orchestration lock, поэтому
-canonical checkout и host configuration никогда не изменяются параллельно.
-
-Параметры:
-  --update-system        дополнительно запросить apt full-upgrade Proxmox/Debian
-  --smoke-test-template  выполнить Full Clone smoke-test template 9000 через временную VM 9099
-  -h, --help             показать эту справку
+Прочее:
+  -h, --help               показать справку
 USAGE
 }
 
-while (($#)); do
-    case "$1" in
-        --update-system) FORWARD_ARGS+=("--update-system") ;;
-        --smoke-test-template) FORWARD_ARGS+=("--smoke-test-template") ;;
-        -h|--help) usage; exit 0 ;;
-        *) die "Неизвестный параметр: $1" ;;
-    esac
-    shift
-done
-
-[[ $EUID -eq 0 ]] || die "Запустите скрипт от root на хосте Proxmox"
-command -v pveversion >/dev/null 2>&1 || die "Команда pveversion не найдена: этот скрипт нужно запускать на Proxmox VE"
-pveversion >/dev/null
-show_bootstrap_banner
-ok "Proxmox VE обнаружен"
-
-acquire_bootstrap_lock() {
-    command -v flock >/dev/null 2>&1 \
-        || die "Не найдена команда flock; на штатном Proxmox VE она должна предоставляться util-linux"
-    install -d -m 0755 /run/lock
-    exec 9>"$LOCK_FILE"
-    flock -n 9 \
-        || die "Другой Public Bootstrap или PVE Configuration уже выполняется. Параллельный запуск запрещён."
-    ok "Получена общая orchestration lock Public Bootstrap/PVE Configuration"
+validate_ipv4() {
+    local ip=$1 a b c d extra octet
+    IFS=. read -r a b c d extra <<<"$ip"
+    [[ -n "$a" && -n "$b" && -n "$c" && -n "$d" && -z "$extra" ]] || return 1
+    for octet in "$a" "$b" "$c" "$d"; do
+        [[ "$octet" =~ ^[0-9]{1,3}$ ]] || return 1
+        ((10#$octet <= 255)) || return 1
+    done
 }
 
-ensure_minimal_packages() {
-    local packages=(git openssh-client curl jq ca-certificates util-linux)
-    local missing=0 cmd
+validate_ipv4_cidr() {
+    local value=$1 ip prefix
+    [[ "$value" == */* ]] || return 1
+    ip=$(printf '%s' "$value" | cut -d/ -f1)
+    prefix=$(printf '%s' "$value" | cut -d/ -f2)
+    validate_ipv4 "$ip" || return 1
+    [[ "$prefix" =~ ^[0-9]{1,2}$ ]] || return 1
+    ((10#$prefix <= 32))
+}
 
-    for cmd in git ssh ssh-keygen curl jq; do
-        command -v "$cmd" >/dev/null 2>&1 || missing=1
+parse_args() {
+    while (($#)); do
+        case "$1" in
+            --check)
+                [[ "$MODE" == "apply" ]] || die "Можно выбрать только один режим"
+                MODE="check"
+                ;;
+            --recover)
+                [[ "$MODE" == "apply" ]] || die "Можно выбрать только один режим"
+                MODE="recover"
+                ;;
+            --ip)
+                shift
+                (($#)) || die "После --ip требуется CIDR"
+                CT_IP=$1
+                ;;
+            --gateway)
+                shift
+                (($#)) || die "После --gateway требуется IPv4"
+                CT_GATEWAY=$1
+                ;;
+            --project-branch)
+                shift
+                (($#)) || die "После --project-branch требуется имя ветки"
+                PRIVATE_BRANCH=$1
+                ;;
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            *)
+                die "Неизвестный параметр: $1"
+                ;;
+        esac
+        shift
     done
 
-    if (( ! missing )); then
-        ok "Минимальный Git/SSH-набор уже установлен"
+    if [[ "$CT_IP" == "dhcp" ]]; then
+        [[ -z "$CT_GATEWAY" ]] || die "--gateway используется только вместе с --ip"
+    else
+        [[ -n "$CT_GATEWAY" ]] || die "Для статического --ip обязательно укажите --gateway"
+        validate_ipv4_cidr "$CT_IP" || die "Некорректный IPv4 CIDR: $CT_IP"
+        validate_ipv4 "$CT_GATEWAY" || die "Некорректный IPv4 gateway: $CT_GATEWAY"
+    fi
+
+    [[ "$PRIVATE_BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]] \
+        || die "Некорректное имя ветки проекта: $PRIVATE_BRANCH"
+}
+
+require_root_and_pve() {
+    local cmd
+    [[ $EUID -eq 0 ]] || die "Запустите скрипт от root на PVE"
+
+    for cmd in pveversion pvesh pct qm pveam pvesm pveum; do
+        command -v "$cmd" >/dev/null 2>&1 || die "Не найдена обязательная команда PVE: $cmd"
+    done
+
+    pveversion >/dev/null || die "Не удалось получить версию Proxmox VE"
+    ok "Proxmox VE обнаружен"
+}
+
+acquire_lock() {
+    command -v flock >/dev/null 2>&1 || die "Не найдена команда flock"
+    install -d -m 0755 /run/lock
+    exec 9>"$LOCK_FILE"
+    flock -n 9 || die "Другой bootstrap уже выполняется"
+    ok "Получена блокировка bootstrap"
+}
+
+ensure_host_packages() {
+    local missing="" pkg
+    for pkg in ca-certificates curl jq util-linux; do
+        dpkg-query -W -f='$Status' "$pkg" 2>/dev/null | grep -q '^install ok installed$' \
+            || missing="$missing $pkg"
+    done
+
+    if [[ -z "$missing" ]]; then
+        ok "Минимальные пакеты PVE уже установлены"
         return
     fi
 
-    log "Установка минимального Git/SSH-набора"
-    if ! DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${packages[@]}"; then
-        warn "Первая попытка установки пакетов не удалась; выполняется apt update без изменения repository policy"
-        apt-get update || warn "apt update завершился с предупреждениями; выполняется повторная попытка установки"
-        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${packages[@]}" \
-            || die "Не удалось установить минимальные пакеты. Исправьте доступность APT-репозиториев и повторите запуск."
+    [[ "$MODE" != "check" ]] || die "Для проверки не хватает пакетов:$missing"
+
+    log "Установка минимальных пакетов PVE"
+    apt-get update
+    # shellcheck disable=SC2086
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $missing
+    ok "Минимальные пакеты PVE установлены"
+}
+
+storage_exists() {
+    pvesm status --storage "$1" >/dev/null 2>&1
+}
+
+storage_has_content() {
+    local storage=$1 content=$2
+    pvesm config "$storage" 2>/dev/null \
+        | sed -n 's/^content[[:space:]]\+//p' \
+        | tr ',' '\n' \
+        | grep -qx "$content"
+}
+
+host_preflight() {
+    local node
+    log "Проверка PVE-хоста"
+
+    ip link show "$CT_BRIDGE" >/dev/null 2>&1 || die "Не найден сетевой мост $CT_BRIDGE"
+    storage_exists "$TEMPLATE_STORAGE" || die "Не найдено хранилище $TEMPLATE_STORAGE"
+    storage_exists "$CT_STORAGE" || die "Не найдено хранилище $CT_STORAGE"
+    storage_has_content "$TEMPLATE_STORAGE" "vztmpl" \
+        || die "Хранилище $TEMPLATE_STORAGE не разрешает LXC templates"
+    storage_has_content "$CT_STORAGE" "rootdir" \
+        || die "Хранилище $CT_STORAGE не разрешает LXC rootdir"
+
+    node=$(hostname -s)
+    [[ -n "$node" ]] || die "Не удалось определить имя PVE-узла"
+    getent ahostsv4 "$node" >/dev/null 2>&1 \
+        || die "Имя PVE-узла '$node' не разрешается в IPv4"
+
+    if [[ "$MODE" != "check" ]]; then
+        curl -fsSI --connect-timeout 10 --max-time 20 -o /dev/null https://github.com/ \
+            || die "GitHub недоступен по HTTPS с PVE"
+        curl -fsS --connect-timeout 10 --max-time 20 -o /dev/null https://api.github.com/meta \
+            || die "GitHub API недоступен по HTTPS с PVE"
     fi
 
-    for cmd in git ssh ssh-keygen curl jq; do
-        command -v "$cmd" >/dev/null 2>&1 || die "После установки не найдена обязательная команда: $cmd"
+    ok "Сеть и базовые хранилища PVE готовы"
+}
+
+backup_host_config() {
+    local ts dir path
+    ts=$(date +%Y%m%d-%H%M%S)
+    dir="$BACKUP_ROOT/$ts"
+    install -d -o root -g root -m 0700 "$dir"
+
+    for path in \
+        /etc/network/interfaces \
+        /etc/hosts \
+        /etc/hostname \
+        /etc/pve/storage.cfg \
+        /etc/pve/user.cfg \
+        /etc/pve/datacenter.cfg \
+        /etc/apt/sources.list \
+        /etc/apt/sources.list.d
+    do
+        [[ -e "$path" ]] || continue
+        cp -a --parents "$path" "$dir/"
     done
-    ok "Минимальный Git/SSH-набор установлен"
+
+    ok "Сохранена резервная копия конфигурации PVE: $dir"
 }
 
-check_github_connectivity() {
-    log "Проверка доступности GitHub"
-    command -v getent >/dev/null 2>&1 || die "Не найдена обязательная команда getent"
-    getent ahosts github.com >/dev/null || die "Не работает DNS-разрешение github.com"
-    getent ahosts api.github.com >/dev/null || die "Не работает DNS-разрешение api.github.com"
-    curl -fsSI --connect-timeout 10 --max-time 20 -o /dev/null https://github.com/ \
-        || die "GitHub недоступен по HTTPS с этого Proxmox host"
-    curl -fsS --connect-timeout 10 --max-time 20 -o /dev/null https://api.github.com/meta \
-        || die "GitHub API недоступен по HTTPS с этого Proxmox host"
-    ok "DNS и HTTPS-доступ к GitHub работают"
+find_local_debian13_template() {
+    pveam list "$TEMPLATE_STORAGE" 2>/dev/null \
+        | awk '$1 ~ /vztmpl\/debian-13-standard_/ {print $1}' \
+        | sort -V \
+        | tail -n1
 }
 
-prepare_bootstrap_temp_dir() {
-    install -d -o root -g root -m 0700 "$BOOTSTRAP_TEMP_DIR"
+latest_debian13_template_name() {
+    pveam available --section system 2>/dev/null \
+        | awk '$2 ~ /^debian-13-standard_.*_amd64\.tar\.(zst|gz)$/ {print $2}' \
+        | sort -V \
+        | tail -n1
 }
 
-prepare_permanent_github_access() {
-    log "Подготовка постоянного root-only GitHub Deploy Key"
+ensure_debian13_template() {
+    local local_ref template_name
+    local_ref=$(find_local_debian13_template)
 
-    install -d -o root -g root -m 0755 "$PERMANENT_CONFIG_DIR"
-    if getent group "$DEPLOY_USER" >/dev/null 2>&1; then
-        install -d -o root -g "$DEPLOY_USER" -m 0750 "$PERMANENT_SSH_DIR"
-    else
-        install -d -o root -g root -m 0700 "$PERMANENT_SSH_DIR"
+    if [[ -n "$local_ref" ]]; then
+        printf '%s\n' "$local_ref"
+        return
     fi
 
-    if [[ ! -f "$PERMANENT_KEY_FILE" ]]; then
-        [[ ! -e "$PERMANENT_KEY_PUB_FILE" ]] \
-            || die "Private Deploy Key ${PERMANENT_KEY_FILE} отсутствует, но public-файл существует. Автоматическая ротация запрещена."
+    [[ "$MODE" != "check" ]] || die "Debian 13 LXC template отсутствует в $TEMPLATE_STORAGE"
 
-        if [[ -f "$LEGACY_BOOTSTRAP_KEY_FILE" ]]; then
-            install -o root -g root -m 0600 "$LEGACY_BOOTSTRAP_KEY_FILE" "$PERMANENT_KEY_FILE"
-            ok "Существующий ключ незавершённого Public Bootstrap v11 перенесён в постоянное хранилище"
-        elif [[ -d "$PERMANENT_REPO/.git" ]]; then
-            die "Canonical private checkout уже существует, но постоянный GitHub Deploy Key отсутствует. Автоматическое создание нового credential запрещено; восстановите прежний ключ."
-        else
-            local old_umask
-            old_umask="$(umask)"
-            umask 077
-            if ! ssh-keygen -q -t ed25519 -N '' \
-                -C 'pve-canonical-readonly-zsergeyru-proxmox' \
-                -f "$PERMANENT_KEY_FILE"; then
-                umask "$old_umask"
-                die "Не удалось создать постоянный GitHub Deploy Key"
-            fi
-            umask "$old_umask"
-            ok "Создан постоянный root-only GitHub Deploy Key"
+    log "Получение Debian 13 LXC template" >&2
+    pveam update >/dev/null
+    template_name=$(latest_debian13_template_name)
+    [[ -n "$template_name" ]] || die "В каталоге PVE не найден Debian 13 standard LXC template"
+
+    pveam download "$TEMPLATE_STORAGE" "$template_name"
+    local_ref=$(find_local_debian13_template)
+    [[ -n "$local_ref" ]] || die "Debian 13 template скачан, но не найден локально"
+
+    ok "Debian 13 LXC template готов: $local_ref" >&2
+    printf '%s\n' "$local_ref"
+}
+
+ct_exists() {
+    pct config "$CTID" >/dev/null 2>&1
+}
+
+vm_exists() {
+    qm config "$CTID" >/dev/null 2>&1
+}
+
+ct_config_value() {
+    local key=$1
+    pct config "$CTID" 2>/dev/null \
+        | sed -n "s/^$key:[[:space:]]*//p" \
+        | head -n1
+}
+
+has_tag() {
+    local tags=$1 needle=$2
+    tr ';' '\n' <<<"$tags" | grep -qx "$needle"
+}
+
+assert_owned_ct() {
+    local hostname tags
+
+    vm_exists && die "VMID $CTID занят виртуальной машиной. Автоматическая замена запрещена."
+    ct_exists || return 1
+
+    hostname=$(ct_config_value hostname)
+    [[ "$hostname" == "$CT_HOSTNAME" ]] \
+        || die "CTID $CTID занят LXC '$hostname', а ожидается '$CT_HOSTNAME'"
+
+    tags=$(ct_config_value tags)
+    has_tag "$tags" "infra-deployer" || die "LXC $CTID не имеет tag infra-deployer"
+    has_tag "$tags" "proxmox-bootstrap" || die "LXC $CTID не имеет tag proxmox-bootstrap"
+}
+
+warn_ct_drift() {
+    local actual
+
+    actual=$(ct_config_value cores)
+    [[ "$actual" == "$CT_CORES" ]] || warn "LXC $CTID: cores=$actual, ожидается $CT_CORES"
+
+    actual=$(ct_config_value memory)
+    [[ "$actual" == "$CT_MEMORY_MB" ]] || warn "LXC $CTID: memory=$actual, ожидается $CT_MEMORY_MB"
+
+    actual=$(ct_config_value swap)
+    [[ "$actual" == "$CT_SWAP_MB" ]] || warn "LXC $CTID: swap=$actual, ожидается $CT_SWAP_MB"
+
+    actual=$(ct_config_value unprivileged)
+    [[ "$actual" == "1" ]] || die "LXC $CTID должен быть unprivileged=1"
+
+    actual=$(ct_config_value protection)
+    [[ "$actual" == "1" ]] || warn "LXC $CTID: protection не включён"
+
+    actual=$(ct_config_value onboot)
+    [[ "$actual" == "1" ]] || warn "LXC $CTID: onboot не включён"
+
+    actual=$(ct_config_value features)
+    [[ "$actual" == *"nesting=1"* && "$actual" == *"keyctl=1"* ]] \
+        || warn "LXC $CTID: ожидаются features nesting=1,keyctl=1"
+}
+
+build_net0() {
+    if [[ "$CT_IP" == "dhcp" ]]; then
+        printf 'name=eth0,bridge=%s,ip=dhcp,type=veth\n' "$CT_BRIDGE"
+    else
+        printf 'name=eth0,bridge=%s,ip=%s,gw=%s,type=veth\n' \
+            "$CT_BRIDGE" "$CT_IP" "$CT_GATEWAY"
+    fi
+}
+
+create_infra_deployer() {
+    local template_ref=$1 net0
+    net0=$(build_net0)
+
+    log "Создание LXC $CTID $CT_HOSTNAME"
+
+    pct create "$CTID" "$template_ref" \
+        --hostname "$CT_HOSTNAME" \
+        --ostype debian \
+        --unprivileged 1 \
+        --cores "$CT_CORES" \
+        --memory "$CT_MEMORY_MB" \
+        --swap "$CT_SWAP_MB" \
+        --rootfs "$CT_STORAGE:$CT_DISK_GB" \
+        --net0 "$net0" \
+        --features "nesting=1,keyctl=1" \
+        --onboot 1 \
+        --protection 1 \
+        --tags "infra-deployer;proxmox-bootstrap" \
+        --description "managed-by=proxmox-bootstrap role=infra-deployer"
+
+    assert_owned_ct || die "Созданный LXC $CTID не прошёл ownership-проверку"
+    ok "LXC $CTID создан"
+}
+
+ensure_ct_running() {
+    local status
+    status=$(pct status "$CTID" | awk '{print $2}')
+
+    if [[ "$status" == "running" ]]; then
+        ok "LXC $CTID уже запущен"
+        return
+    fi
+
+    [[ "$MODE" != "check" ]] || die "LXC $CTID не запущен"
+    pct start "$CTID"
+    ok "LXC $CTID запущен"
+}
+
+ct_exec() {
+    pct exec "$CTID" -- "$@"
+}
+
+wait_ct_network() {
+    local i
+    log "Ожидание сети внутри LXC $CTID"
+
+    for i in $(seq 1 60); do
+        if ct_exec sh -c 'ip -4 route show default | grep -q "^default " && getent ahostsv4 github.com >/dev/null 2>&1'; then
+            ok "Сеть и DNS внутри LXC $CTID работают"
+            return
         fi
+        sleep 2
+    done
+
+    die "LXC $CTID запущен, но сеть или DNS не готовы"
+}
+
+bootstrap_ct_os() {
+    [[ "$MODE" != "check" ]] || return 0
+
+    log "Минимальная подготовка Debian внутри LXC $CTID"
+    ct_exec env DEBIAN_FRONTEND=noninteractive apt-get update
+    ct_exec env DEBIAN_FRONTEND=noninteractive \
+        apt-get install -y --no-install-recommends \
+        ca-certificates curl git jq openssh-client openssh-server
+
+    ct_exec systemctl enable --now ssh >/dev/null
+    ok "Минимальная Debian-основа внутри LXC готова"
+}
+
+install_pve_ca() {
+    local src=/etc/pve/pve-root-ca.pem tmp node
+    [[ "$MODE" != "check" ]] || return 0
+    [[ -s "$src" ]] || die "Не найден PVE CA: $src"
+
+    install -d -o root -g root -m 0700 "$HOST_TMP_DIR"
+    tmp="$HOST_TMP_DIR/pve-root-ca.crt"
+    install -o root -g root -m 0644 "$src" "$tmp"
+
+    ct_exec install -d -m 0755 /usr/local/share/ca-certificates
+    pct push "$CTID" "$tmp" /usr/local/share/ca-certificates/pve-root-ca.crt \
+        --user 0 --group 0 --perms 0644
+    ct_exec update-ca-certificates >/dev/null
+    rm -f "$tmp"
+
+    node=$(hostname -s)
+    ct_exec curl -fsS --connect-timeout 5 --max-time 15 \
+        "https://$node:8006/api2/json/version" >/dev/null \
+        || die "LXC $CTID не может проверить TLS PVE API по имени '$node'"
+
+    ok "PVE CA установлен и TLS PVE API проверен"
+}
+
+api_user_exists() {
+    pveum user list --output-format json \
+        | jq -e --arg id "$API_USER" '.[] | select(.userid == $id)' >/dev/null
+}
+
+api_token_exists() {
+    pveum user token list "$API_USER" --output-format json 2>/dev/null \
+        | jq -e --arg id "$API_TOKEN_NAME" '.[] | select(.tokenid == $id)' >/dev/null
+}
+
+ensure_api_user() {
+    if api_user_exists; then
+        return
+    fi
+
+    [[ "$MODE" != "check" ]] || die "PVE user $API_USER отсутствует"
+    pveum user add "$API_USER" --comment "910 infra-deployer"
+    ok "Создан PVE user $API_USER"
+}
+
+ensure_bootstrap_audit_acl() {
+    [[ "$MODE" != "check" ]] || return 0
+
+    # На этом этапе намеренно только чтение. Права OpenTofu на изменение VM/LXC
+    # будут добавлены отдельным контрактом после проверки реального provider.
+    pveum acl modify / --user "$API_USER" --role PVEAuditor
+
+    if api_token_exists; then
+        pveum acl modify / --token "$API_TOKEN_ID" --role PVEAuditor
+    fi
+}
+
+create_api_token_and_stage_secret() {
+    local json secret tmp
+
+    json=$(pveum user token add "$API_USER" "$API_TOKEN_NAME" --privsep 1 --output-format json)
+    secret=$(jq -r '.value // empty' <<<"$json")
+    [[ -n "$secret" && "$secret" != "null" ]] || die "PVE создал token, но secret не удалось получить"
+
+    pveum acl modify / --token "$API_TOKEN_ID" --role PVEAuditor
+
+    install -d -o root -g root -m 0700 "$HOST_TMP_DIR"
+    tmp=$(mktemp "$HOST_TMP_DIR/pve-api.XXXXXX")
+    chmod 0600 "$tmp"
+
+    cat >"$tmp" <<EOF_TOKEN
+PVE_API_URL=https://$(hostname -s):8006
+PVE_API_TOKEN_ID=$API_TOKEN_ID
+PVE_API_TOKEN_SECRET=$secret
+EOF_TOKEN
+
+    ct_exec install -d -m 0700 "$CT_BOOTSTRAP_DIR"
+    pct push "$CTID" "$tmp" "$CT_SECRET_FILE" --user 0 --group 0 --perms 0600
+    rm -f "$tmp"
+
+    ok "Создан и передан в 910 API token $API_TOKEN_ID"
+}
+
+ensure_api_identity() {
+    ensure_api_user
+
+    if [[ "$MODE" == "check" ]]; then
+        api_token_exists || die "PVE API token $API_TOKEN_ID отсутствует"
+        ok "PVE API identity существует"
+        return
+    fi
+
+    if [[ "$MODE" == "recover" ]] && api_token_exists; then
+        log "Явная смена PVE API token в режиме recovery"
+        pveum user token remove "$API_USER" "$API_TOKEN_NAME"
+    fi
+
+    ensure_bootstrap_audit_acl
+
+    if ! api_token_exists; then
+        create_api_token_and_stage_secret
+        return
+    fi
+
+    if ct_exec test -f "$CT_COMPLETE_MARKER"; then
+        ok "Используется существующий PVE API token"
+        return
+    fi
+
+    if ct_exec test -s "$CT_SECRET_FILE"; then
+        ok "API token уже подготовлен для незавершённой настройки"
+        return
+    fi
+
+    die "Token $API_TOKEN_ID существует, но secret недоступен. Для явной ротации используйте --recover."
+}
+
+ensure_github_key() {
+    [[ "$MODE" != "check" ]] || return 0
+
+    ct_exec install -d -m 0700 /root/.ssh
+
+    if ct_exec test -f "$CT_GITHUB_KEY"; then
+        ok "GitHub Deploy Key внутри 910 уже существует"
     else
-        ok "Используется существующий постоянный GitHub Deploy Key"
+        ct_exec test ! -e "$CT_GITHUB_PUB" || die "В 910 есть public GitHub key без private key"
+        ct_exec ssh-keygen -q -t ed25519 -N '' \
+            -C infra-deployer-readonly-zsergeyru-proxmox \
+            -f "$CT_GITHUB_KEY"
+        ok "GitHub Deploy Key создан внутри 910"
     fi
 
-    local derived_pub tmp_pub
-    derived_pub="$(ssh-keygen -y -f "$PERMANENT_KEY_FILE" 2>/dev/null)" \
-        || die "Не удалось прочитать постоянный Deploy Key: ${PERMANENT_KEY_FILE}"
-    [[ "$derived_pub" == ssh-ed25519\ * ]] \
-        || die "Постоянный GitHub Deploy Key должен быть Ed25519"
+    ct_exec sh -c \
+        "curl -fsSL --connect-timeout 10 --max-time 20 https://api.github.com/meta | jq -r '.ssh_keys[] | \"github.com \" + .' > '$CT_GITHUB_KNOWN_HOSTS'"
 
-    chown root:root "$PERMANENT_KEY_FILE"
-    chmod 0600 "$PERMANENT_KEY_FILE"
-
-    tmp_pub="$(mktemp "${PERMANENT_SSH_DIR}/.github-key-pub.XXXXXX")"
-    printf '%s %s\n' "$derived_pub" 'pve-canonical-readonly-zsergeyru-proxmox' >"$tmp_pub"
-    install -o root -g root -m 0644 "$tmp_pub" "$PERMANENT_KEY_PUB_FILE"
-    rm -f "$tmp_pub"
-
-    if [[ -f "$LEGACY_BOOTSTRAP_KEY_FILE" ]]; then
-        local legacy_pub
-        legacy_pub="$(ssh-keygen -y -f "$LEGACY_BOOTSTRAP_KEY_FILE" 2>/dev/null || true)"
-        [[ -n "$legacy_pub" ]] || die "Нечитаемый старый temporary Deploy Key: ${LEGACY_BOOTSTRAP_KEY_FILE}"
-        [[ "$legacy_pub" == "$derived_pub" ]] \
-            || die "Старый temporary Deploy Key отличается от постоянного. Автоматическое удаление неоднозначного credential запрещено."
-        rm -f -- "$LEGACY_BOOTSTRAP_KEY_FILE" "$LEGACY_BOOTSTRAP_KEY_PUB_FILE"
-        ok "Старая временная копия GitHub Deploy Key удалена; постоянный ключ сохранён"
-    fi
-
-    local tmp_hosts tmp_config
-    tmp_hosts="$(mktemp "${PERMANENT_SSH_DIR}/.known-hosts.XXXXXX")"
-    curl -fsSL --connect-timeout 10 --max-time 20 https://api.github.com/meta \
-        | jq -r '.ssh_keys[] | "github.com " + .' >"$tmp_hosts"
-    [[ -s "$tmp_hosts" ]] || { rm -f "$tmp_hosts"; die "Не удалось получить SSH host keys GitHub через api.github.com/meta"; }
-    install -o root -g root -m 0644 "$tmp_hosts" "$PERMANENT_KNOWN_HOSTS"
-    rm -f "$tmp_hosts"
-
-    tmp_config="$(mktemp "${PERMANENT_SSH_DIR}/.config.XXXXXX")"
-    cat >"$tmp_config" <<EOF_SSH
+    ct_exec sh -c "cat > '$CT_GITHUB_SSH_CONFIG' <<EOF_SSH
 Host github.com
     HostName github.com
     User git
-    IdentityFile ${PERMANENT_KEY_FILE}
+    IdentityFile $CT_GITHUB_KEY
     IdentitiesOnly yes
-    UserKnownHostsFile ${PERMANENT_KNOWN_HOSTS}
+    UserKnownHostsFile $CT_GITHUB_KNOWN_HOSTS
     StrictHostKeyChecking yes
     BatchMode yes
     ConnectTimeout 10
-    ServerAliveInterval 15
-    ServerAliveCountMax 2
 EOF_SSH
-    install -o root -g root -m 0600 "$tmp_config" "$PERMANENT_SSH_CONFIG"
-    rm -f "$tmp_config"
-
-    rm -f -- "$LEGACY_BOOTSTRAP_KNOWN_HOSTS" "$LEGACY_BOOTSTRAP_SSH_CONFIG"
-}
-
-bootstrap_git() {
-    env GIT_SSH_COMMAND="ssh -F ${PERMANENT_SSH_CONFIG}" \
-        git -c "safe.directory=${TEMP_REPO}" "$@"
+chmod 0600 '$CT_GITHUB_KEY' '$CT_GITHUB_SSH_CONFIG'
+chmod 0644 '$CT_GITHUB_PUB' '$CT_GITHUB_KNOWN_HOSTS'"
 }
 
 private_branch_accessible() {
-    local out
-    if ! out="$(bootstrap_git ls-remote "$PRIVATE_REPO" "refs/heads/${PRIVATE_BRANCH}" 2>/dev/null)"; then
-        return 1
-    fi
-    [[ -n "$out" ]] || die "Private repo доступен, но ожидаемая ветка ${PRIVATE_BRANCH} отсутствует."
+    ct_exec env GIT_SSH_COMMAND="ssh -F $CT_GITHUB_SSH_CONFIG" \
+        git ls-remote "$PRIVATE_REPO" "refs/heads/$PRIVATE_BRANCH" 2>/dev/null \
+        | grep -q .
 }
 
-show_deploy_key_instructions() {
-    printf '\n%s%sОЖИДАНИЕ АВТОРИЗАЦИИ GITHUB%s\n\n' "$C_BOLD" "$C_MAGENTA" "$C_RESET"
-    printf 'Добавьте следующий постоянный публичный ключ в private repo zsergeyru/proxmox:\n\n'
-    cat "$PERMANENT_KEY_PUB_FILE"
-    printf '\nПуть: GitHub -> zsergeyru/proxmox -> Settings -> Deploy keys -> Add deploy key\n'
-    printf 'Allow write access: ВЫКЛЮЧЕН\n'
-    printf '\nПосле добавления ключа вернитесь в этот терминал.\n'
+show_github_key() {
+    printf '\n%sДобавьте этот ключ в GitHub как read-only Deploy Key репозитория zsergeyru/proxmox:%s\n\n' \
+        "$C_BOLD" "$C_RESET"
+    ct_exec cat "$CT_GITHUB_PUB"
+    printf '\nGitHub -> zsergeyru/proxmox -> Settings -> Deploy keys -> Add deploy key\n'
+    printf 'Allow write access: ВЫКЛЮЧЕН\n\n'
 }
 
-ensure_private_repo_authorized() {
+ensure_private_repo_access() {
     if private_branch_accessible; then
-        ok "Read-only доступ к private repo и ветке ${PRIVATE_BRANCH} уже подтверждён"
+        ok "910 имеет read-only доступ к закрытому проекту"
         return
     fi
 
-    show_deploy_key_instructions
+    show_github_key
+
     [[ -r /dev/tty ]] \
-        || die "Deploy Key ещё не авторизован, а интерактивный терминал недоступен. Добавьте показанный постоянный public key в GitHub и повторите bootstrap-pve.sh."
+        || die "GitHub Deploy Key ещё не зарегистрирован. Добавьте показанный key и повторите bootstrap."
 
     printf 'Нажмите Enter после добавления Deploy Key в GitHub...' >/dev/tty
-    IFS= read -r _ </dev/tty || die "Не удалось дождаться подтверждения через терминал"
+    IFS= read -r _ </dev/tty || die "Не удалось прочитать подтверждение"
     printf '\n' >/dev/tty
 
-    check_github_connectivity
-    private_branch_accessible \
-        || die "Read-only доступ к ${PRIVATE_REPO}, ветка ${PRIVATE_BRANCH}, по-прежнему отсутствует. Проверьте постоянный Deploy Key и повторите bootstrap-pve.sh."
-    ok "Read-only доступ к private repo подтверждён"
+    private_branch_accessible || die "Доступ к $PRIVATE_REPO/$PRIVATE_BRANCH по-прежнему отсутствует"
+    ok "Read-only доступ к закрытому проекту подтверждён"
 }
 
-sync_temporary_private_repo() {
-    log "Получение private PVE Configuration"
+checkout_private_project() {
+    local origin
+    [[ "$MODE" != "check" ]] || return 0
 
-    if [[ ! -d "$TEMP_REPO/.git" ]]; then
-        rm -rf "$TEMP_REPO"
-        bootstrap_git clone --depth 1 --branch "$PRIVATE_BRANCH" "$PRIVATE_REPO" "$TEMP_REPO"
+    log "Получение закрытого проекта внутри 910"
+
+    if ct_exec test -d "$CT_PROJECT_DIR/.git"; then
+        origin=$(ct_exec git -C "$CT_PROJECT_DIR" remote get-url origin)
+        [[ "$origin" == "$PRIVATE_REPO" ]] \
+            || die "Bootstrap checkout внутри 910 имеет неожиданный origin: $origin"
+
+        ct_exec env GIT_SSH_COMMAND="ssh -F $CT_GITHUB_SSH_CONFIG" \
+            git -C "$CT_PROJECT_DIR" fetch --depth 1 origin "$PRIVATE_BRANCH"
+        ct_exec git -C "$CT_PROJECT_DIR" reset --hard FETCH_HEAD
+        ct_exec git -C "$CT_PROJECT_DIR" clean -ffdx
     else
-        local origin_url
-        origin_url="$(bootstrap_git -C "$TEMP_REPO" remote get-url origin 2>/dev/null || true)"
-        [[ "$origin_url" == "$PRIVATE_REPO" ]] \
-            || die "Временный checkout ${TEMP_REPO} имеет неожиданный origin '${origin_url:-не задан}'. Автоматическая подмена origin запрещена."
-        bootstrap_git -C "$TEMP_REPO" fetch --depth 1 origin "$PRIVATE_BRANCH"
-        bootstrap_git -C "$TEMP_REPO" reset --hard FETCH_HEAD
-        bootstrap_git -C "$TEMP_REPO" clean -ffdx
+        ct_exec rm -rf "$CT_PROJECT_DIR"
+        ct_exec install -d -m 0755 /var/lib/infra-deployer
+        ct_exec env GIT_SSH_COMMAND="ssh -F $CT_GITHUB_SSH_CONFIG" \
+            git clone --depth 1 --branch "$PRIVATE_BRANCH" "$PRIVATE_REPO" "$CT_PROJECT_DIR"
     fi
 
-    ok "Private repo получен shallow clone глубиной 1 commit"
+    ok "Закрытый проект получен внутри 910"
 }
 
-handoff_to_pve_configuration() {
-    local configure="${TEMP_REPO}/scripts/pve/setup/configure-pve.sh"
-    local revision
-    [[ -f "$configure" ]] || die "В private repo не найден scripts/pve/setup/configure-pve.sh"
-    revision="$(bootstrap_git -C "$TEMP_REPO" rev-parse HEAD)"
+run_private_setup() {
+    local setup revision
+    [[ "$MODE" != "check" ]] || return 0
 
-    show_handoff_banner
-    info "PVE Configuration revision=${revision}"
-    PVE_CONFIGURATION_SOURCE_REVISION="$revision" \
-    PVE_ORCHESTRATION_LOCK_HELD=1 \
-        bash "$configure" "${FORWARD_ARGS[@]}"
-}
+    if ct_exec test -f "$CT_COMPLETE_MARKER" && [[ "$MODE" != "recover" ]]; then
+        ok "Первоначальная настройка 910 уже завершена"
+        return
+    fi
 
-prepare_root_owned_permanent_git_runtime() {
-    log "Проверка canonical source в root trust boundary"
+    setup="$CT_PROJECT_DIR/$PRIVATE_SETUP_PATH"
+    ct_exec test -f "$setup" \
+        || die "В ветке $PRIVATE_BRANCH закрытого проекта отсутствует $PRIVATE_SETUP_PATH"
 
-    install -d -o root -g "$DEPLOY_USER" -m 0750 "$PERMANENT_RUNTIME_DIR"
-    install -d -o root -g "$DEPLOY_USER" -m 0750 "$PERMANENT_SSH_DIR"
+    log "Передача управления настройке infra-deployer"
+    ct_exec env \
+        INFRA_DEPLOYER_BOOTSTRAP=1 \
+        PVE_API_SECRET_FILE="$CT_SECRET_FILE" \
+        bash "$setup"
 
-    chown root:root "$PERMANENT_KEY_FILE"
-    chmod 0600 "$PERMANENT_KEY_FILE"
-    chown root:root "$PERMANENT_KEY_PUB_FILE" "$PERMANENT_KNOWN_HOSTS" "$PERMANENT_SSH_CONFIG"
-    chmod 0644 "$PERMANENT_KEY_PUB_FILE" "$PERMANENT_KNOWN_HOSTS"
-    chmod 0600 "$PERMANENT_SSH_CONFIG"
+    ct_exec rm -f "$CT_SECRET_FILE"
+    ct_exec install -d -m 0755 /var/lib/infra-deployer
 
-    chown -R root:root "$PERMANENT_REPO"
-    chmod -R go-w "$PERMANENT_REPO"
-    ok "Canonical repo и GitHub credential находятся под root trust boundary"
-}
-
-permanent_git() {
-    env GIT_SSH_COMMAND="ssh -F ${PERMANENT_SSH_CONFIG}" \
-        git -c "safe.directory=${PERMANENT_REPO}" "$@"
-}
-
-permanent_runtime_ready_for_refresh() {
-    id "$DEPLOY_USER" >/dev/null 2>&1 \
-        && [[ -f "$PERMANENT_KEY_FILE" ]] \
-        && [[ -f "$PERMANENT_KNOWN_HOSTS" ]] \
-        && [[ -f "$PERMANENT_SSH_CONFIG" ]] \
-        && [[ -d "$PERMANENT_REPO/.git" ]]
-}
-
-assert_permanent_source_trust() {
-    local parent_owner parent_mode violation key_owner key_mode config_owner config_mode
-
-    parent_owner="$(stat -c '%U:%G' "$PERMANENT_RUNTIME_DIR" 2>/dev/null || true)"
-    parent_mode="$(stat -c '%a' "$PERMANENT_RUNTIME_DIR" 2>/dev/null || true)"
-    [[ "$parent_owner" == "root:${DEPLOY_USER}" && "$parent_mode" == "750" ]] \
-        || die "${PERMANENT_RUNTIME_DIR} должен быть root:${DEPLOY_USER} 0750, обнаружено ${parent_owner:-?} ${parent_mode:-?}"
-
-    key_owner="$(stat -c '%U:%G' "$PERMANENT_KEY_FILE" 2>/dev/null || true)"
-    key_mode="$(stat -c '%a' "$PERMANENT_KEY_FILE" 2>/dev/null || true)"
-    [[ "$key_owner" == "root:root" && "$key_mode" == "600" ]] \
-        || die "Canonical GitHub private key должен быть root:root 0600, обнаружено ${key_owner:-?} ${key_mode:-?}"
-
-    config_owner="$(stat -c '%U:%G' "$PERMANENT_SSH_CONFIG" 2>/dev/null || true)"
-    config_mode="$(stat -c '%a' "$PERMANENT_SSH_CONFIG" 2>/dev/null || true)"
-    [[ "$config_owner" == "root:root" && "$config_mode" == "600" ]] \
-        || die "Canonical Git SSH config должен быть root:root 0600, обнаружено ${config_owner:-?} ${config_mode:-?}"
-
-    violation="$(find "$PERMANENT_REPO" -xdev \( -type f -o -type d \) \( ! -uid 0 -o -perm /022 \) -print -quit 2>/dev/null || true)"
-    [[ -z "$violation" ]] \
-        || die "Canonical checkout не является root-trusted: '${violation}' не root-owned или доступен на запись группе/остальным"
-}
-
-assert_permanent_repo_clean() {
-    local status
-    status="$(permanent_git -C "$PERMANENT_REPO" status --porcelain=v1 --untracked-files=all --ignored)" \
-        || die "Не удалось проверить clean state canonical checkout ${PERMANENT_REPO}"
-    status="$(printf '%s\n' "$status" | grep -Ev '^!! .*(__pycache__/|\.py[co]$)' || true)"
-    [[ -z "$status" ]] \
-        || die "Canonical checkout ${PERMANENT_REPO} содержит локальный drift. Bootstrap не выполняет destructive reset/clean поверх локальных данных. Первый элемент: $(head -n1 <<<"$status")"
-}
-
-refresh_permanent_repo_and_handoff() {
-    log "Обновление root-trusted canonical private checkout"
-
-    id "$DEPLOY_USER" >/dev/null 2>&1 \
-        || die "Linux-пользователь ${DEPLOY_USER} отсутствует. Восстановите PVE Configuration runtime."
-    [[ -f "$PERMANENT_KEY_FILE" ]] || die "Постоянный Deploy Key ${PERMANENT_KEY_FILE} отсутствует. Автоматическая ротация запрещена."
-    [[ -f "$PERMANENT_KNOWN_HOSTS" ]] || die "Отсутствует ${PERMANENT_KNOWN_HOSTS}. Восстановите canonical SSH runtime."
-    [[ -f "$PERMANENT_SSH_CONFIG" ]] || die "Отсутствует ${PERMANENT_SSH_CONFIG}. Восстановите canonical SSH runtime."
-    [[ -d "$PERMANENT_REPO/.git" ]] || die "Canonical checkout ${PERMANENT_REPO} отсутствует или не является Git repository."
-
-    prepare_root_owned_permanent_git_runtime
-    assert_permanent_source_trust
-
-    local origin_url refs revision configuration_version
-    origin_url="$(permanent_git -C "$PERMANENT_REPO" remote get-url origin 2>/dev/null || true)"
-    [[ "$origin_url" == "$PRIVATE_REPO" ]] \
-        || die "Canonical checkout ${PERMANENT_REPO} имеет неожиданный origin '${origin_url:-не задан}'. Ожидается '${PRIVATE_REPO}'."
-
-    assert_permanent_repo_clean
-
-    refs="$(permanent_git ls-remote "$PRIVATE_REPO" "refs/heads/${PRIVATE_BRANCH}" 2>/dev/null || true)"
-    [[ -n "$refs" ]] || die "Постоянный root-only Deploy Key не даёт read-only доступ к ${PRIVATE_REPO}/${PRIVATE_BRANCH}."
-
-    permanent_git -C "$PERMANENT_REPO" fetch --depth 1 origin "$PRIVATE_BRANCH" \
-        || die "Не удалось получить актуальную ветку ${PRIVATE_BRANCH} private repo"
-    permanent_git -C "$PERMANENT_REPO" reset --hard FETCH_HEAD \
-        || die "Не удалось переключить canonical checkout на полученную ${PRIVATE_BRANCH}"
-    permanent_git -C "$PERMANENT_REPO" clean -ffd \
-        || die "Не удалось очистить canonical checkout от неотслеживаемых файлов"
-    chown -R root:root "$PERMANENT_REPO"
-    chmod -R go-w "$PERMANENT_REPO"
-    assert_permanent_source_trust
-    assert_permanent_repo_clean
-
-    revision="$(permanent_git -C "$PERMANENT_REPO" rev-parse HEAD)"
-    [[ -f "$PVE_CONFIGURATION_CANONICAL" ]] || die "После обновления private repo не найден ${PVE_CONFIGURATION_CANONICAL}"
-
-    configuration_version="$(sed -n 's/^PVE_CONFIGURATION_VERSION=//p' "$PVE_CONFIGURATION_VERSION_FILE" | head -n1)"
-    ok "Canonical private repo обновлён: ${revision}"
-    [[ -n "$configuration_version" ]] && ok "Будет запущена PVE Configuration version=${configuration_version}"
-
-    show_handoff_banner
-    info "PVE Configuration revision=${revision}"
-    PVE_CONFIGURATION_SOURCE_REVISION="$revision" \
-    PVE_ORCHESTRATION_LOCK_HELD=1 \
-        bash "$PVE_CONFIGURATION_CANONICAL" "${FORWARD_ARGS[@]}"
-}
-
-write_complete_marker() {
-    local revision=$1 now marker_tmp
-    now="$(date --iso-8601=seconds)"
-    install -d -m 0750 "$PERMANENT_STATE_DIR"
-    marker_tmp="${PERMANENT_STATE_DIR}/.bootstrap-complete.$$.tmp"
-    cat >"$marker_tmp" <<EOF_MARKER
+    revision=$(ct_exec git -C "$CT_PROJECT_DIR" rev-parse HEAD)
+    ct_exec sh -c "cat > '$CT_COMPLETE_MARKER' <<EOF_MARKER
 bootstrap=complete
-public_bootstrap_version=${PUBLIC_BOOTSTRAP_VERSION}
-timestamp=${now}
-private_revision=${revision}
+public_bootstrap_version=$PUBLIC_BOOTSTRAP_VERSION
+project_branch=$PRIVATE_BRANCH
+project_revision=$revision
 EOF_MARKER
-    chmod 0600 "$marker_tmp"
-    mv -f "$marker_tmp" "$COMPLETE_MARKER"
-    chmod 0600 "$COMPLETE_MARKER"
+chmod 0600 '$CT_COMPLETE_MARKER'"
+
+    ok "Первоначальная настройка 910 завершена"
 }
 
-finalize_bootstrap() {
-    local revision
-    [[ -d "$PERMANENT_STATE_DIR" ]] \
-        || die "PVE Configuration завершилась, но постоянный state-каталог ${PERMANENT_STATE_DIR} не найден; temporary checkout сохранён для диагностики"
-    permanent_runtime_ready_for_refresh \
-        || die "PVE Configuration завершилась, но canonical permanent runtime неполон; temporary checkout сохранён для диагностики"
+check_ready_state() {
+    local status
+    log "Проверка состояния"
 
-    assert_permanent_source_trust
-    revision="$(permanent_git -C "$PERMANENT_REPO" rev-parse HEAD 2>/dev/null || true)"
-    [[ "$revision" =~ ^[0-9a-f]{40}$ ]] \
-        || die "Не удалось определить final revision canonical private checkout"
+    assert_owned_ct || die "LXC $CTID отсутствует"
+    warn_ct_drift
 
-    rm -rf "$BOOTSTRAP_TEMP_DIR"
-    [[ ! -e "$BOOTSTRAP_TEMP_DIR" ]] || die "Не удалось полностью удалить temporary checkout ${BOOTSTRAP_TEMP_DIR}"
-    write_complete_marker "$revision"
-    ok "Public Bootstrap завершён; temporary checkout удалён, marker записан для revision ${revision}"
+    status=$(pct status "$CTID" | awk '{print $2}')
+    [[ "$status" == "running" ]] || die "LXC $CTID не запущен"
+
+    api_user_exists || die "PVE user $API_USER отсутствует"
+    api_token_exists || die "PVE API token $API_TOKEN_ID отсутствует"
+    ct_exec test -f "$CT_COMPLETE_MARKER" \
+        || die "LXC $CTID существует, но первоначальная настройка ещё не завершена"
+    ct_exec ip -4 route show default | grep -q '^default ' \
+        || die "В 910 нет IPv4 default route"
+
+    ok "910 infra-deployer соответствует bootstrap-контракту"
 }
 
 main() {
-    local revision
-    acquire_bootstrap_lock
-    ensure_minimal_packages
-    check_github_connectivity
+    local template_ref=""
 
-    if [[ -f "$COMPLETE_MARKER" && ! -f "$PERMANENT_KEY_FILE" ]]; then
-        die "Bootstrap marker существует, но постоянный GitHub Deploy Key отсутствует. Автоматическое создание нового ключа запрещено; восстановите прежний credential."
-    fi
+    parse_args "$@"
+    require_root_and_pve
+    acquire_lock
+    ensure_host_packages
+    host_preflight
 
-    prepare_permanent_github_access
-
-    if [[ -f "$COMPLETE_MARKER" ]]; then
-        info "Public Bootstrap уже выполнялся; будет обновлён private checkout"
-        permanent_runtime_ready_for_refresh \
-            || die "Bootstrap marker существует, но canonical runtime неполон. Восстановите постоянный runtime; новый GitHub ключ создаваться не будет."
-        ensure_private_repo_authorized
-        refresh_permanent_repo_and_handoff
-        revision="$(permanent_git -C "$PERMANENT_REPO" rev-parse HEAD 2>/dev/null || true)"
-        write_complete_marker "$revision"
-        printf '\n%s%sPVE CONFIGURATION УСПЕШНО ЗАВЕРШЕНА%s\n' "$C_BOLD" "$C_GREEN" "$C_RESET"
+    if [[ "$MODE" == "check" ]]; then
+        check_ready_state
         exit 0
     fi
 
-    if permanent_runtime_ready_for_refresh; then
-        info "Bootstrap marker отсутствует, но canonical runtime уже готов. Продолжается незавершённый первый запуск с тем же постоянным credential."
-        ensure_private_repo_authorized
-        refresh_permanent_repo_and_handoff
-        finalize_bootstrap
-        printf '\n%s%sPUBLIC BOOTSTRAP УСПЕШНО ВОЗОБНОВЛЁН И ЗАВЕРШЁН%s\n' "$C_BOLD" "$C_GREEN" "$C_RESET"
+    if assert_owned_ct; then
+        info "Найден принадлежащий bootstrap LXC $CTID"
+        warn_ct_drift
+    else
+        backup_host_config
+        template_ref=$(ensure_debian13_template)
+        create_infra_deployer "$template_ref"
+    fi
+
+    ensure_ct_running
+    wait_ct_network
+    bootstrap_ct_os
+    install_pve_ca
+    ensure_api_identity
+
+    if ct_exec test -f "$CT_COMPLETE_MARKER" && [[ "$MODE" != "recover" ]]; then
+        check_ready_state
         exit 0
     fi
 
-    if [[ -d "$PERMANENT_REPO/.git" || -f "$PERMANENT_KEY_FILE" ]]; then
-        info "Обнаружен частично созданный permanent runtime. Public Bootstrap продолжит первый запуск с существующим постоянным GitHub credential."
-    fi
+    ensure_github_key
+    ensure_private_repo_access
+    checkout_private_project
+    run_private_setup
+    check_ready_state
 
-    prepare_bootstrap_temp_dir
-    ensure_private_repo_authorized
-    sync_temporary_private_repo
-    handoff_to_pve_configuration
-    finalize_bootstrap
-
-    printf '\n%s%sPUBLIC BOOTSTRAP УСПЕШНО ЗАВЕРШЁН%s\n' "$C_BOLD" "$C_GREEN" "$C_RESET"
-    printf 'Дальнейшее состояние PVE поддерживает private scripts/pve/setup/configure-pve.sh.\n'
-    printf 'Для следующих запусков используйте ту же public bootstrap-pve.sh команду.\n'
+    printf '\n%s%sPUBLIC BOOTSTRAP УСПЕШНО ЗАВЕРШЁН%s\n' \
+        "$C_BOLD" "$C_GREEN" "$C_RESET"
+    printf 'Дальнейшее управление инфраструктурой выполняется из LXC %s %s.\n' \
+        "$CTID" "$CT_HOSTNAME"
 }
 
 main "$@"
