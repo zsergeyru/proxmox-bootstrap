@@ -1,60 +1,86 @@
 # Proxmox Bootstrap — infra-iac-redesign
 
-Публичный bootstrap нужен только для рождения постоянного разворачивателя 910 infra-deployer на чистом Proxmox VE и одноразового установления доверия между PVE и 910.
+Публичный bootstrap состоит из одного файла:
 
 ~~~text
-чистый PVE
-→ bootstrap-pve.sh на PVE
-→ создать/запустить 910
-→ передать bootstrap-910.sh внутрь 910
-→ bootstrap-910.sh готовит 910 и получает закрытый проект
-→ закрытый проект готовит одноразовый PVE helper
-→ bootstrap-pve.sh выполняет helper на PVE
-→ дальнейшая настройка выполняется внутри 910
+bootstrap-pve.sh
 ~~~
 
-На PVE публичный bootstrap не устанавливает дополнительные пакеты и не содержит внутреннюю логику infra-deployer.
+Он всегда запускается только на PVE и линейно подготавливает LXC 910 infra-deployer.
 
 ## Запуск
-
-До переноса новой архитектуры в main используется ветка:
 
 ~~~bash
 curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/infra-iac-redesign/bootstrap-pve.sh | bash
 ~~~
 
-Единственное обязательное ручное действие при первом запуске — добавить показанный public Deploy Key в GitHub как read-only ключ репозитория zsergeyru/proxmox.
-
-## Что делает bootstrap-pve.sh на PVE
+## Последовательность
 
 ~~~text
-проверить root и минимальную основу PVE
-→ проверить VMID 910
-→ при необходимости скачать Debian 13 LXC template
-→ создать 910
+PVE
+→ проверить минимальную основу
+→ создать или найти LXC 910
 → запустить 910 и дождаться сети
-→ передать bootstrap-910.sh внутрь 910
-→ запустить этап подготовки внутри 910
-→ один раз выполнить подготовленный private PVE helper от root
-→ снова передать управление 910
-→ получить итоговый результат проверки
+→ создать или использовать постоянный GitHub Deploy Key на PVE
+→ установить минимальные пакеты внутри 910 через pct exec
+→ скопировать GitHub Deploy Key внутрь 910
+→ проверить доступ к закрытому репозиторию
+→ получить или обновить закрытый репозиторий внутри 910
+→ выполнить private pve-bootstrap-access.sh на PVE
+→ выполнить private setup.sh внутри 910
+→ проверить infra-deployer
 ~~~
 
-bootstrap-pve.sh не содержит список пакетов 910, GitHub Deploy Key, клонирование закрытого проекта, путь к внутреннему setup.sh или устройство Semaphore/OpenTofu/Ansible/Packer.
+Отдельного bootstrap-910.sh больше нет.
 
-## Что делает bootstrap-910.sh внутри 910
+## Постоянный GitHub Deploy Key
+
+Ключ хранится на PVE и переживает удаление или пересоздание LXC 910:
 
 ~~~text
-подготовить минимальный Debian
-→ создать/проверить GitHub Deploy Key
-→ проверить read-only доступ к закрытому проекту
-→ получить/обновить закрытый проект
-→ подготовить одноразовый PVE helper
-→ после выдачи PVE-доступа запустить внутренний setup.sh
-→ проверить готовность infra-deployer
+/root/.config/proxmox-bootstrap/
+├── github_proxmox_repo_ed25519
+└── github_proxmox_repo_ed25519.pub
 ~~~
 
-Docker, Semaphore, OpenTofu, Ansible, Packer и остальные инструменты устанавливаются и настраиваются только внутри 910 закрытым проектом.
+Права:
+
+~~~text
+/root/.config/proxmox-bootstrap                0700
+github_proxmox_repo_ed25519                    0600
+github_proxmox_repo_ed25519.pub                0644
+~~~
+
+При создании нового 910 bootstrap копирует этот же ключ внутрь контейнера.
+
+Поэтому после однократного добавления public key в GitHub новый ключ при пересоздании 910 больше не требуется.
+
+## Закрытый проект
+
+Внутри 910 закрытый проект хранится:
+
+~~~text
+/var/lib/infra-deployer/bootstrap-repo
+~~~
+
+Источник:
+
+~~~text
+git@github.com:zsergeyru/proxmox.git
+~~~
+
+При повторном запуске bootstrap обновляет выбранную ветку проекта.
+
+Из закрытого проекта используются:
+
+~~~text
+scripts/infra-deployer/pve-bootstrap-access.sh
+scripts/infra-deployer/setup.sh
+~~~
+
+Первый сценарий выполняется на PVE и содержит политику API token, pool и ACL.
+
+Второй выполняется внутри 910 и устанавливает Docker, Semaphore, Runner, OpenTofu, Ansible, Packer и остальные компоненты infra-deployer.
 
 ## Контракт 910
 
@@ -77,80 +103,40 @@ features:    nesting=1,keyctl=1
 
 Чужой LXC или VM с VMID 910 автоматически не заменяется.
 
-## Одноразовый доступ к PVE
+## Технический лог
 
-Модель PVE-прав хранится только в закрытом проекте.
+На экран выводятся основные этапы, успешные проверки и ошибки.
 
-После получения закрытого репозитория гостевой bootstrap подготавливает:
-
-~~~text
-scripts/infra-deployer/pve-bootstrap-access.sh
-~~~
-
-bootstrap-pve.sh только передаёт этот сценарий в bash на PVE от root. Именно закрытый проект определяет API token, pool и ACL.
-
-После этого 910 получает ограниченный API-доступ и дальше управляет PVE самостоятельно.
-
-## GitHub
-
-Deploy Key создаётся и хранится только внутри 910. На PVE private key не хранится.
-
-Если ключ ещё не зарегистрирован, гостевой bootstrap показывает public key. После его добавления в:
-
-~~~text
-GitHub → zsergeyru/proxmox → Settings → Deploy keys
-Allow write access: выключен
-~~~
-
-публичный host-bootstrap повторяет этап подготовки 910.
-
-## Вывод и технический лог
-
-На экран выводятся только основные этапы, успешные проверки и ошибки.
-
-Подробный вывод `apt`, Docker, Git и сборки Runner сохраняется внутри 910:
+Подробный вывод установки внутри 910 сохраняется:
 
 ~~~text
 /var/log/infra-deployer/bootstrap.log
 ~~~
 
-При ошибке bootstrap показывает последние строки этого файла и путь к полному логу.
-
-Цветной режим host-bootstrap передаётся внутрь 910, поэтому сообщения public bootstrap, guest bootstrap и private setup используют одинаковое оформление.
+При ошибке выводятся последние строки этого файла.
 
 ## Повторный запуск
 
-Корректный 910 используется повторно. Гостевой bootstrap обновляет закрытую ветку, после чего повторяемая внутренняя настройка приводит 910 к текущему состоянию.
+Обычный повторный запуск приводит существующий 910 к актуальному состоянию.
 
 ~~~bash
 bootstrap-pve.sh --check
 ~~~
 
-только проверяет готовое состояние через гостевой bootstrap.
+только проверяет готовность.
 
 ~~~bash
 bootstrap-pve.sh --recover
 ~~~
 
-разрешает перевыпустить потерянный PVE API token при восстановлении 910.
+разрешает перевыпустить потерянный PVE API token.
 
-## Что не должно появляться на PVE
+## Что остаётся на PVE
 
-Публичный host-bootstrap не должен устанавливать дополнительные пакеты и не должен содержать:
+Из bootstrap-состояния постоянно хранится только GitHub Deploy Key:
 
 ~~~text
-GitHub Deploy Key или private key
-git clone/fetch закрытого проекта
-модель PVE-ролей и ACL
-Docker
-Semaphore
-OpenTofu
-Ansible
-Packer
-постоянную закрытую Git-копию
-постоянные каталоги проекта
+/root/.config/proxmox-bootstrap/
 ~~~
 
-## CI
-
-CI отдельно проверяет границу ответственности: bootstrap-pve.sh остаётся минимальным host-bootstrap, а подготовка Debian/GitHub/закрытого проекта выполняется bootstrap-910.sh внутри LXC 910.
+На PVE не устанавливаются Docker, Semaphore, OpenTofu, Ansible, Packer или закрытый Git-репозиторий.
