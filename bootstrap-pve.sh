@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# Public Bootstrap для Proxmox VE.
-# Его область: минимальная проверка PVE и специальный LXC 910 infra-deployer.
-# Остальная инфраструктура управляется уже из 910.
+# Минимальный public bootstrap для Proxmox VE.
+# Его задача: создать/запустить 910, выдать ему ограниченный PVE API token,
+# дать read-only доступ к закрытому Git и передать управление setup.sh.
+# Docker, Semaphore, OpenTofu, Ansible и Packer настраиваются уже внутри 910.
 
-PUBLIC_BOOTSTRAP_VERSION="2.0.0-dev1"
+PUBLIC_BOOTSTRAP_VERSION="3.0.0-dev1"
 
 CTID=910
 CT_HOSTNAME="infra-deployer"
@@ -17,44 +18,38 @@ CT_STORAGE="local-lvm"
 CT_BRIDGE="vmbr0"
 TEMPLATE_STORAGE="local"
 
-API_USER="infra-deployer@pve"
-API_TOKEN_NAME="automation"
-API_TOKEN_ID="infra-deployer@pve!automation"
+API_USER="root@pam"
+API_TOKEN_NAME="infra-deployer"
+API_TOKEN_ID="$API_USER!$API_TOKEN_NAME"
 
 MANAGED_POOL="managed"
 TEMPLATE_VMID=9000
-
-ROLE_MANAGED_GUEST="InfraManagedGuest"
-ROLE_MANAGED_GUEST_PRIVS="Pool.Audit VM.Allocate VM.Audit VM.Config.CDROM VM.Config.Cloudinit VM.Config.CPU VM.Config.Disk VM.Config.HWType VM.Config.Memory VM.Config.Network VM.Config.Options VM.GuestAgent.Audit VM.PowerMgmt"
-ROLE_AUDITOR="PVEAuditor"
-ROLE_TEMPLATE="PVETemplateUser"
-ROLE_STORAGE="PVEDatastoreUser"
-ROLE_NETWORK="PVESDNUser"
-
-FORBIDDEN_VM_PRIVS="VM.Allocate VM.Backup VM.Clone VM.Config.CDROM VM.Config.Cloudinit VM.Config.CPU VM.Config.Disk VM.Config.HWType VM.Config.Memory VM.Config.Network VM.Config.Options VM.Console VM.GuestAgent.FileRead VM.GuestAgent.FileWrite VM.GuestAgent.FileSystemMgmt VM.GuestAgent.Unrestricted VM.Migrate VM.PowerMgmt VM.Replicate VM.Snapshot VM.Snapshot.Rollback"
-FORBIDDEN_ROOT_PRIVS="Permissions.Modify Sys.Modify Sys.PowerMgmt User.Modify Group.Allocate Realm.Allocate Realm.AllocateUser Pool.Allocate Datastore.Allocate Datastore.AllocateSpace Datastore.AllocateTemplate SDN.Allocate SDN.Use Mapping.Modify"
 
 PRIVATE_REPO="git@github.com:zsergeyru/proxmox.git"
 PRIVATE_BRANCH="infra-iac-redesign"
 PRIVATE_SETUP_PATH="scripts/infra-deployer/setup.sh"
 
 LOCK_FILE="/run/lock/proxmox-bootstrap.lock"
-BACKUP_ROOT="/var/backups/proxmox-bootstrap"
 HOST_TMP_DIR="/run/proxmox-bootstrap"
 
 CT_BOOTSTRAP_DIR="/root/.infra-deployer-bootstrap"
-CT_SECRET_FILE="/root/.infra-deployer-bootstrap/pve-api.env"
+CT_SECRET_FILE="$CT_BOOTSTRAP_DIR/pve-api.env"
+CT_PERSISTENT_SECRET="/etc/infra-deployer/secrets/pve-api.env"
 CT_GITHUB_KEY="/root/.ssh/github_proxmox_repo_ed25519"
-CT_GITHUB_PUB="/root/.ssh/github_proxmox_repo_ed25519.pub"
+CT_GITHUB_PUB="$CT_GITHUB_KEY.pub"
 CT_GITHUB_KNOWN_HOSTS="/root/.ssh/github_known_hosts"
 CT_GITHUB_SSH_CONFIG="/root/.ssh/github_config"
 CT_PROJECT_DIR="/var/lib/infra-deployer/bootstrap-repo"
 CT_COMPLETE_MARKER="/var/lib/infra-deployer/bootstrap-complete"
 
+LEGACY_API_USER="infra-deployer@pve"
+LEGACY_API_TOKEN_NAME="automation"
+LEGACY_API_TOKEN_ID="$LEGACY_API_USER!$LEGACY_API_TOKEN_NAME"
+LEGACY_ROLE="InfraManagedGuest"
+
 MODE="apply"
 CT_IP="dhcp"
 CT_GATEWAY=""
-HOST_BACKUP_DONE=0
 
 C_RESET=""
 C_BOLD=""
@@ -194,24 +189,13 @@ acquire_lock() {
 }
 
 ensure_host_packages() {
-    local missing="" pkg
-    for pkg in ca-certificates curl jq util-linux; do
-        dpkg -s "$pkg" >/dev/null 2>&1 || missing="$missing $pkg"
-    done
-
-    if [[ -z "$missing" ]]; then
-        ok "Минимальные пакеты PVE уже установлены"
+    if dpkg -s jq >/dev/null 2>&1; then
         return
     fi
 
-    [[ "$MODE" != "check" ]] || die "Для проверки не хватает пакетов:$missing"
-
-    backup_host_config
-    log "Установка минимальных пакетов PVE"
+    [[ "$MODE" != "check" ]] || die "Для проверки не хватает пакета jq"
     apt-get update
-    # shellcheck disable=SC2086
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $missing
-    ok "Минимальные пакеты PVE установлены"
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends jq
 }
 
 storage_exists() {
@@ -228,9 +212,8 @@ storage_has_content() {
 
 host_preflight() {
     local node
-    log "Проверка PVE-хоста"
+    log "Проверка минимальной основы PVE"
 
-    [[ -e /dev/kvm ]] || die "Не найден /dev/kvm"
     ip link show "$CT_BRIDGE" >/dev/null 2>&1 || die "Не найден сетевой мост $CT_BRIDGE"
     storage_exists "$TEMPLATE_STORAGE" || die "Не найдено хранилище $TEMPLATE_STORAGE"
     storage_exists "$CT_STORAGE" || die "Не найдено хранилище $CT_STORAGE"
@@ -244,44 +227,10 @@ host_preflight() {
     getent ahostsv4 "$node" >/dev/null 2>&1 \
         || die "Имя PVE-узла '$node' не разрешается в IPv4"
 
-    if [[ "$MODE" != "check" ]]; then
-        curl -fsSI --connect-timeout 10 --max-time 20 -o /dev/null https://github.com/ \
-            || die "GitHub недоступен по HTTPS с PVE"
-        curl -fsS --connect-timeout 10 --max-time 20 -o /dev/null https://api.github.com/meta \
-            || die "GitHub API недоступен по HTTPS с PVE"
-    fi
-
-    ok "Сеть и базовые хранилища PVE готовы"
+    ok "Минимальная основа PVE готова"
 }
 
-backup_host_config() {
-    local ts dir path
 
-    if ((HOST_BACKUP_DONE == 1)); then
-        return
-    fi
-
-    ts=$(date +%Y%m%d-%H%M%S)
-    dir="$BACKUP_ROOT/$ts"
-    install -d -o root -g root -m 0700 "$dir"
-
-    for path in \
-        /etc/network/interfaces \
-        /etc/hosts \
-        /etc/hostname \
-        /etc/pve/storage.cfg \
-        /etc/pve/user.cfg \
-        /etc/pve/datacenter.cfg \
-        /etc/apt/sources.list \
-        /etc/apt/sources.list.d
-    do
-        [[ -e "$path" ]] || continue
-        cp -a --parents "$path" "$dir/"
-    done
-
-    HOST_BACKUP_DONE=1
-    ok "Сохранена резервная копия конфигурации PVE: $dir"
-}
 
 find_local_debian13_template() {
     pveam list "$TEMPLATE_STORAGE" 2>/dev/null \
@@ -356,39 +305,7 @@ assert_owned_ct() {
     has_tag "$tags" "proxmox-bootstrap" || die "LXC $CTID не имеет tag proxmox-bootstrap"
 }
 
-warn_ct_drift() {
-    local actual
 
-    actual=$(ct_config_value cores)
-    [[ "$actual" == "$CT_CORES" ]] || warn "LXC $CTID: cores=$actual, ожидается $CT_CORES"
-
-    actual=$(ct_config_value memory)
-    [[ "$actual" == "$CT_MEMORY_MB" ]] || warn "LXC $CTID: memory=$actual, ожидается $CT_MEMORY_MB"
-
-    actual=$(ct_config_value swap)
-    [[ "$actual" == "$CT_SWAP_MB" ]] || warn "LXC $CTID: swap=$actual, ожидается $CT_SWAP_MB"
-
-    actual=$(ct_config_value unprivileged)
-    [[ "$actual" == "1" ]] || die "LXC $CTID должен быть unprivileged=1"
-
-    actual=$(ct_config_value protection)
-    [[ "$actual" == "1" ]] || die "LXC $CTID: protection должен быть включён"
-
-    actual=$(ct_config_value onboot)
-    [[ "$actual" == "1" ]] || warn "LXC $CTID: onboot не включён"
-
-    actual=$(ct_config_value features)
-    [[ "$actual" == *"nesting=1"* && "$actual" == *"keyctl=1"* ]] \
-        || warn "LXC $CTID: ожидаются features nesting=1,keyctl=1"
-
-    actual=$(ct_config_value rootfs)
-    [[ "$actual" == "$CT_STORAGE:"* ]] \
-        || warn "LXC $CTID: rootfs находится не в ожидаемом storage $CT_STORAGE"
-
-    actual=$(ct_config_value net0)
-    [[ "$actual" == *"bridge=$CT_BRIDGE"* ]] \
-        || warn "LXC $CTID: net0 использует не ожидаемый bridge $CT_BRIDGE"
-}
 
 build_net0() {
     if [[ "$CT_IP" == "dhcp" ]]; then
@@ -516,389 +433,166 @@ install_pve_ca() {
     ok "PVE CA установлен и TLS PVE API проверен"
 }
 
-api_user_exists() {
-    pveum user list --output-format json \
-        | jq -e --arg id "$API_USER" '.[] | select(.userid == $id)' >/dev/null
-}
-
-api_token_exists() {
-    pveum user token list "$API_USER" --output-format json 2>/dev/null \
-        | jq -e --arg id "$API_TOKEN_NAME" '.[] | select(.tokenid == $id)' >/dev/null
-}
-
-api_token_privsep() {
-    pveum user token list "$API_USER" --output-format json 2>/dev/null \
-        | jq -r --arg id "$API_TOKEN_NAME" '.[] | select(.tokenid == $id) | .privsep'
-}
-
-assert_api_token_privsep() {
-    local privsep
-    privsep=$(api_token_privsep)
-    [[ "$privsep" == "1" ]] \
-        || die "PVE API token $API_TOKEN_ID должен иметь privsep=1"
-}
-
-ensure_api_user() {
-    local users_json enabled groups
-
-    users_json="$(pveum user list --full 1 --output-format json)"
-
-    if jq -e --arg id "$API_USER" '.[] | select(.userid == $id)' <<<"$users_json" >/dev/null; then
-        enabled="$(jq -r --arg id "$API_USER" '.[] | select(.userid == $id) | (.enable // 1)' <<<"$users_json" | head -n1)"
-        [[ "$enabled" != "0" ]] || die "PVE user $API_USER существует, но отключён"
-
-        groups="$(jq -r --arg id "$API_USER" '.[] | select(.userid == $id) | (.groups // "")' <<<"$users_json" | head -n1)"
-        [[ -z "$groups" || "$groups" == "null" ]]             || die "PVE user $API_USER не должен состоять в группах; обнаружено: $groups"
-        return
-    fi
-
-    [[ "$MODE" != "check" ]] || die "PVE user $API_USER отсутствует"
-    pveum user add "$API_USER" --comment "910 infra-deployer" --enable 1
-    ok "Создан PVE user $API_USER"
-}
-
-priv_lines() {
-    printf '%s\n' "$1" | tr ', ' '\n\n' | sed '/^$/d' | LC_ALL=C sort -u
-}
-
 managed_pool_exists() {
-    pveum pool list --output-format json 2>/dev/null \
-        | jq -e --arg id "$MANAGED_POOL" '.[] | select(.poolid == $id)' >/dev/null
-}
-
-assert_910_outside_managed_pool() {
-    local pool_json
-
-    pool_json="$(pvesh get "/pools/$MANAGED_POOL" --output-format json)" \
-        || die "Не удалось прочитать pool $MANAGED_POOL"
-
-    if jq -e --arg vmid "$CTID" \
-        '.members[]? | select(((.vmid // "") | tostring) == $vmid)' \
-        <<<"$pool_json" >/dev/null; then
-        die "LXC $CTID infra-deployer не должен входить в pool $MANAGED_POOL"
-    fi
+    pvesh get "/pools/$MANAGED_POOL" --output-format json >/dev/null 2>&1
 }
 
 ensure_managed_pool() {
     if managed_pool_exists; then
-        assert_910_outside_managed_pool
-        ok "Pool $MANAGED_POOL существует, 910 в него не входит"
         return
     fi
 
     [[ "$MODE" != "check" ]] || die "Pool $MANAGED_POOL отсутствует"
-
-    pveum pool add "$MANAGED_POOL" \
-        --comment "Обычные гости под управлением infra-deployer"
+    pveum pool add "$MANAGED_POOL" --comment "Guests managed from 910 infra-deployer"
     ok "Создан pool $MANAGED_POOL"
 }
 
-role_exists() {
-    local role=$1
-    pveum role list --output-format json \
-        | jq -e --arg role "$role" '.[] | select(.roleid == $role)' >/dev/null
+api_token_exists() {
+    pveum user token list "$API_USER" --output-format json 2>/dev/null \
+        | jq -e --arg token "$API_TOKEN_NAME" \
+            '.[] | select(.tokenid == $token)' >/dev/null
 }
 
-role_privs() {
-    local role=$1
-    pveum role list --output-format json \
-        | jq -r --arg role "$role" \
-            '.[] | select(.roleid == $role) | (.privs // "")' \
-        | head -n1
+assert_api_token_privsep() {
+    local value
+    value="$(pveum user token list "$API_USER" --output-format json 2>/dev/null \
+        | jq -r --arg token "$API_TOKEN_NAME" \
+            '.[] | select(.tokenid == $token) | .privsep // empty')"
+    [[ "$value" == "1" ]] || die "PVE API token $API_TOKEN_ID должен иметь privsep=1"
 }
 
-ensure_managed_guest_role() {
-    local actual expected
-
-    expected="$(priv_lines "$ROLE_MANAGED_GUEST_PRIVS")"
-
-    if ! role_exists "$ROLE_MANAGED_GUEST"; then
-        [[ "$MODE" != "check" ]] || die "Роль $ROLE_MANAGED_GUEST отсутствует"
-
-        pveum role add "$ROLE_MANAGED_GUEST" \
-            --privs "$ROLE_MANAGED_GUEST_PRIVS"
-        ok "Создана роль $ROLE_MANAGED_GUEST"
-        return
-    fi
-
-    actual="$(priv_lines "$(role_privs "$ROLE_MANAGED_GUEST")")"
-
-    if [[ "$actual" == "$expected" ]]; then
-        ok "Роль $ROLE_MANAGED_GUEST соответствует контракту"
-        return
-    fi
-
-    [[ "$MODE" != "check" ]] \
-        || die "Роль $ROLE_MANAGED_GUEST не соответствует минимальному контракту"
-
-    # Роль принадлежит только bootstrap и имеет точный набор прав.
-    pveum role modify "$ROLE_MANAGED_GUEST" \
-        --privs "$ROLE_MANAGED_GUEST_PRIVS"
-
-    actual="$(priv_lines "$(role_privs "$ROLE_MANAGED_GUEST")")"
-    [[ "$actual" == "$expected" ]] \
-        || die "Не удалось привести роль $ROLE_MANAGED_GUEST к контракту"
-
-    ok "Роль $ROLE_MANAGED_GUEST приведена к точному набору privileges"
-}
-
-acl_entry_exists() {
-    local path=$1 type=$2 principal=$3 role=$4
+token_acl_exists() {
+    local path=$1 role=$2
 
     pveum acl list --output-format json \
         | jq -e \
             --arg path "$path" \
-            --arg type "$type" \
-            --arg principal "$principal" \
+            --arg token "$API_TOKEN_ID" \
             --arg role "$role" \
             '.[] | select(
                 .path == $path
-                and .type == $type
-                and .ugid == $principal
+                and .type == "token"
+                and .ugid == $token
                 and .roleid == $role
                 and ((.propagate // 1) == 1)
             )' >/dev/null
 }
 
-ensure_acl_entry() {
-    local path=$1 type=$2 principal=$3 role=$4 option
+ensure_token_acl() {
+    local path=$1 role=$2
 
-    if acl_entry_exists "$path" "$type" "$principal" "$role"; then
-        return
-    fi
-
+    token_acl_exists "$path" "$role" && return
     [[ "$MODE" != "check" ]] \
-        || die "Отсутствует ACL: $path, $type=$principal, role=$role"
-
-    case "$type" in
-        user) option="--users" ;;
-        token) option="--tokens" ;;
-        *) die "Неизвестный тип ACL principal: $type" ;;
-    esac
+        || die "Отсутствует ACL token=$API_TOKEN_ID path=$path role=$role"
 
     pveum acl modify "$path" \
-        "$option" "$principal" \
+        --tokens "$API_TOKEN_ID" \
         --roles "$role" \
         --propagate 1
-
-    acl_entry_exists "$path" "$type" "$principal" "$role" \
-        || die "Не удалось создать ACL: $path, $type=$principal, role=$role"
 }
 
-ensure_principal_acls() {
-    local type=$1 principal=$2
-
-    ensure_acl_entry "/" \
-        "$type" "$principal" "$ROLE_AUDITOR"
-    ensure_acl_entry "/pool/$MANAGED_POOL" \
-        "$type" "$principal" "$ROLE_MANAGED_GUEST"
-    ensure_acl_entry "/vms/$TEMPLATE_VMID" \
-        "$type" "$principal" "$ROLE_TEMPLATE"
-    ensure_acl_entry "/storage/$CT_STORAGE" \
-        "$type" "$principal" "$ROLE_STORAGE"
-    ensure_acl_entry "/sdn/zones/localnetwork/$CT_BRIDGE" \
-        "$type" "$principal" "$ROLE_NETWORK"
+persistent_token_available() {
+    ct_exec test -s "$CT_PERSISTENT_SECRET" || return 1
+    ct_exec grep -Fxq "PVE_API_TOKEN_ID=$API_TOKEN_ID" "$CT_PERSISTENT_SECRET"
 }
 
-verify_acl_boundaries() {
-    local acl_json type principal rows path role propagate
+stage_api_secret() {
+    local secret=$1 node tmp
 
-    acl_json="$(pveum acl list --output-format json)" \
-        || die "Не удалось получить ACL Proxmox"
-
-    for type in user token; do
-        if [[ "$type" == "user" ]]; then
-            principal="$API_USER"
-        else
-            principal="$API_TOKEN_ID"
-        fi
-
-        rows="$(jq -r \
-            --arg type "$type" \
-            --arg principal "$principal" \
-            '.[] |
-             select(.type == $type and .ugid == $principal) |
-             "\(.path)|\(.roleid)|\(.propagate // 1)"' \
-            <<<"$acl_json")"
-
-        while IFS='|' read -r path role propagate; do
-            [[ -n "$path" ]] || continue
-            [[ "$propagate" == "1" ]] \
-                || die "ACL $type=$principal на $path имеет propagate=$propagate"
-
-            case "$path|$role" in
-                "/|$ROLE_AUDITOR"|\
-                "/pool/$MANAGED_POOL|$ROLE_MANAGED_GUEST"|\
-                "/vms/$TEMPLATE_VMID|$ROLE_TEMPLATE"|\
-                "/storage/$CT_STORAGE|$ROLE_STORAGE"|\
-                "/sdn/zones/localnetwork/$CT_BRIDGE|$ROLE_NETWORK")
-                    ;;
-                *)
-                    die "Обнаружена лишняя ACL у $type=$principal: path=$path role=$role"
-                    ;;
-            esac
-        done <<<"$rows"
-    done
-}
-
-token_permissions_at() {
-    local path=$1
-
-    pveum user token permissions \
-        "$API_USER" "$API_TOKEN_NAME" \
-        --path "$path" \
-        --output-format json
-}
-
-permission_present() {
-    local json=$1 privilege=$2
-
-    jq -e --arg privilege "$privilege" '
-        any(.[]?;
-            (type == "object")
-            and (
-                ((.[$privilege] // 0) == 1)
-                or ((.[$privilege] // false) == true)
-            )
-        )
-    ' <<<"$json" >/dev/null
-}
-
-require_permissions_at() {
-    local path=$1 raw=$2 json privilege missing=""
-
-    json="$(token_permissions_at "$path")" \
-        || die "Не удалось получить effective permissions token на $path"
-
-    while IFS= read -r privilege; do
-        [[ -n "$privilege" ]] || continue
-        permission_present "$json" "$privilege" \
-            || missing="$missing $privilege"
-    done < <(priv_lines "$raw")
-
-    [[ -z "$missing" ]] \
-        || die "Token не имеет обязательных privileges на $path:$missing"
-}
-
-forbid_permissions_at() {
-    local path=$1 raw=$2 json privilege found=""
-
-    json="$(token_permissions_at "$path")" \
-        || die "Не удалось получить effective permissions token на $path"
-
-    while IFS= read -r privilege; do
-        [[ -n "$privilege" ]] || continue
-        permission_present "$json" "$privilege" \
-            && found="$found $privilege"
-    done < <(priv_lines "$raw")
-
-    [[ -z "$found" ]] \
-        || die "Token имеет запрещённые privileges на $path:$found"
-}
-
-verify_infra_access_contract() {
-    managed_pool_exists || die "Pool $MANAGED_POOL отсутствует"
-    assert_910_outside_managed_pool
-    ensure_managed_guest_role
-    ensure_principal_acls user "$API_USER"
-    ensure_principal_acls token "$API_TOKEN_ID"
-    verify_acl_boundaries
-
-    require_permissions_at \
-        "/pool/$MANAGED_POOL" \
-        "$ROLE_MANAGED_GUEST_PRIVS"
-    require_permissions_at \
-        "/vms/$TEMPLATE_VMID" \
-        "VM.Audit VM.Clone"
-    require_permissions_at \
-        "/storage/$CT_STORAGE" \
-        "Datastore.Audit Datastore.AllocateSpace"
-    require_permissions_at \
-        "/sdn/zones/localnetwork/$CT_BRIDGE" \
-        "SDN.Audit SDN.Use"
-
-    # Ключевая граница: разворачиватель видит 910, но не меняет его.
-    forbid_permissions_at "/vms/$CTID" "$FORBIDDEN_VM_PRIVS"
-
-    # На корне разрешены только audit-права; административные запрещены.
-    forbid_permissions_at "/" "$FORBIDDEN_ROOT_PRIVS"
-
-    ok "PVE access contract infra-deployer проверен"
-}
-
-ensure_infra_access_contract() {
-    ensure_managed_pool
-    ensure_managed_guest_role
-    ensure_principal_acls user "$API_USER"
-
-    if api_token_exists; then
-        ensure_principal_acls token "$API_TOKEN_ID"
-    fi
-}
-
-create_api_token_and_stage_secret() {
-    local json secret tmp
-
-    json=$(pveum user token add "$API_USER" "$API_TOKEN_NAME" --privsep 1 --output-format json)
-    secret=$(jq -r '.value // empty' <<<"$json")
-    [[ -n "$secret" && "$secret" != "null" ]] || die "PVE создал token, но secret не удалось получить"
-
+    node=$(hostname -s)
     install -d -o root -g root -m 0700 "$HOST_TMP_DIR"
     tmp=$(mktemp "$HOST_TMP_DIR/pve-api.XXXXXX")
     chmod 0600 "$tmp"
 
     cat >"$tmp" <<EOF_TOKEN
-PVE_API_URL=https://$(hostname -s):8006
+PVE_API_URL=https://$node:8006
 PVE_API_TOKEN_ID=$API_TOKEN_ID
 PVE_API_TOKEN_SECRET=$secret
 EOF_TOKEN
 
     ct_exec install -d -m 0700 "$CT_BOOTSTRAP_DIR"
-    if ! pct push "$CTID" "$tmp" "$CT_SECRET_FILE" --user 0 --group 0 --perms 0600; then
-        rm -f "$tmp"
-        pveum user token remove "$API_USER" "$API_TOKEN_NAME" >/dev/null 2>&1 || true
-        die "Не удалось передать API token secret в 910; созданный token удалён"
-    fi
+    pct push "$CTID" "$tmp" "$CT_SECRET_FILE" --user 0 --group 0 --perms 0600
     rm -f "$tmp"
-
-    ok "Создан и передан в 910 API token $API_TOKEN_ID"
 }
 
-ensure_api_identity() {
-    ensure_api_user
+create_api_token() {
+    local json secret
 
-    if [[ "$MODE" == "check" ]]; then
-        api_token_exists || die "PVE API token $API_TOKEN_ID отсутствует"
-        assert_api_token_privsep
-        verify_infra_access_contract
-        ok "PVE API identity существует и соответствует контракту"
-        return
-    fi
+    json="$(pveum user token add "$API_USER" "$API_TOKEN_NAME" \
+        --privsep 1 --output-format json)"
+    secret="$(jq -r '.value // empty' <<<"$json")"
+    [[ -n "$secret" && "$secret" != "null" ]] \
+        || die "PVE создал token, но secret не удалось получить"
 
+    stage_api_secret "$secret"
+    ok "Создан и передан в 910 PVE API token $API_TOKEN_ID"
+}
+
+ensure_pve_access() {
     ensure_managed_pool
-    ensure_managed_guest_role
-    ensure_principal_acls user "$API_USER"
 
     if [[ "$MODE" == "recover" ]] && api_token_exists; then
-        log "Явная смена PVE API token в режиме recovery"
+        log "Смена PVE API token при восстановлении"
         pveum user token remove "$API_USER" "$API_TOKEN_NAME"
     fi
 
     if ! api_token_exists; then
-        create_api_token_and_stage_secret
-    elif ct_exec test -f "$CT_COMPLETE_MARKER"; then
-        assert_api_token_privsep
-        ok "Используется существующий PVE API token"
+        create_api_token
     elif ct_exec test -s "$CT_SECRET_FILE"; then
-        assert_api_token_privsep
-        ok "API token уже подготовлен для незавершённой настройки"
+        ok "PVE API secret уже подготовлен для незавершённой настройки"
+    elif persistent_token_available; then
+        ok "Используется существующий PVE API token"
     else
-        die "Token $API_TOKEN_ID существует, но secret недоступен. Для явной ротации используйте --recover."
+        die "Token $API_TOKEN_ID существует, но его secret недоступен в 910. Используйте --recover."
     fi
 
-    ensure_principal_acls token "$API_TOKEN_ID"
     assert_api_token_privsep
-    verify_infra_access_contract
+
+    # Только штатные роли Proxmox. Изменение гостей ограничено pool managed.
+    ensure_token_acl "/" "PVEAuditor"
+    ensure_token_acl "/pool/$MANAGED_POOL" "PVEVMAdmin"
+    ensure_token_acl "/storage/$CT_STORAGE" "PVEDatastoreUser"
+    ensure_token_acl "/sdn/zones/localnetwork/$CT_BRIDGE" "PVESDNUser"
+    ensure_token_acl "/vms/$TEMPLATE_VMID" "PVETemplateUser"
+
+    ok "Ограниченный PVE API-доступ для 910 готов"
+}
+
+legacy_api_user_exists() {
+    pveum user list --output-format json 2>/dev/null \
+        | jq -e --arg user "$LEGACY_API_USER" \
+            '.[] | select(.userid == $user)' >/dev/null
+}
+
+legacy_api_token_exists() {
+    pveum user token list "$LEGACY_API_USER" --output-format json 2>/dev/null \
+        | jq -e --arg token "$LEGACY_API_TOKEN_NAME" \
+            '.[] | select(.tokenid == $token)' >/dev/null
+}
+
+cleanup_legacy_access() {
+    legacy_api_user_exists || return 0
+
+    warn "Удаляется прежняя PVE-идентичность $LEGACY_API_TOKEN_ID"
+
+    pveum acl delete "/" --users "$LEGACY_API_USER" --roles PVEAuditor >/dev/null 2>&1 || true
+    pveum acl delete "/pool/$MANAGED_POOL" --users "$LEGACY_API_USER" --roles "$LEGACY_ROLE" >/dev/null 2>&1 || true
+    pveum acl delete "/vms/$TEMPLATE_VMID" --users "$LEGACY_API_USER" --roles PVETemplateUser >/dev/null 2>&1 || true
+    pveum acl delete "/storage/$CT_STORAGE" --users "$LEGACY_API_USER" --roles PVEDatastoreUser >/dev/null 2>&1 || true
+    pveum acl delete "/sdn/zones/localnetwork/$CT_BRIDGE" --users "$LEGACY_API_USER" --roles PVESDNUser >/dev/null 2>&1 || true
+
+    if legacy_api_token_exists; then
+        pveum acl delete "/" --tokens "$LEGACY_API_TOKEN_ID" --roles PVEAuditor >/dev/null 2>&1 || true
+        pveum acl delete "/pool/$MANAGED_POOL" --tokens "$LEGACY_API_TOKEN_ID" --roles "$LEGACY_ROLE" >/dev/null 2>&1 || true
+        pveum acl delete "/vms/$TEMPLATE_VMID" --tokens "$LEGACY_API_TOKEN_ID" --roles PVETemplateUser >/dev/null 2>&1 || true
+        pveum acl delete "/storage/$CT_STORAGE" --tokens "$LEGACY_API_TOKEN_ID" --roles PVEDatastoreUser >/dev/null 2>&1 || true
+        pveum acl delete "/sdn/zones/localnetwork/$CT_BRIDGE" --tokens "$LEGACY_API_TOKEN_ID" --roles PVESDNUser >/dev/null 2>&1 || true
+        pveum user token remove "$LEGACY_API_USER" "$LEGACY_API_TOKEN_NAME" >/dev/null
+    fi
+
+    pveum user delete "$LEGACY_API_USER" >/dev/null
+    pveum role delete "$LEGACY_ROLE" >/dev/null 2>&1 || true
+    ok "Прежняя PVE-идентичность удалена"
 }
 
 ensure_github_key() {
@@ -1042,42 +736,29 @@ chmod 0600 '$CT_COMPLETE_MARKER'"
 }
 
 check_ready_state() {
-    local status node
-    log "Проверка состояния"
+    local status
 
     assert_owned_ct || die "LXC $CTID отсутствует"
-    warn_ct_drift
 
     status=$(pct status "$CTID" | awk '{print $2}')
     [[ "$status" == "running" ]] || die "LXC $CTID не запущен"
 
-    api_user_exists || die "PVE user $API_USER отсутствует"
+    managed_pool_exists || die "Pool $MANAGED_POOL отсутствует"
     api_token_exists || die "PVE API token $API_TOKEN_ID отсутствует"
     assert_api_token_privsep
-    verify_infra_access_contract
+
     ct_exec test -f "$CT_COMPLETE_MARKER" \
-        || die "LXC $CTID существует, но первоначальная настройка ещё не завершена"
+        || die "Первоначальная настройка 910 ещё не завершена"
     ct_exec test -x /usr/local/sbin/infra-deployer-status \
-        || die "В 910 отсутствует команда infra-deployer-status"
+        || die "В 910 отсутствует infra-deployer-status"
     ct_exec /usr/local/sbin/infra-deployer-status >/dev/null \
-        || die "Внутренняя проверка infra-deployer завершилась ошибкой"
-    ct_exec ip -4 route show default | grep -q '^default ' \
-        || die "В 910 нет IPv4 default route"
+        || die "Внутренняя проверка 910 завершилась ошибкой"
 
-    node=$(hostname -s)
-    # Здесь проверяется именно TLS и доступность HTTPS. Ответ 401 допустим:
-    # авторизацию PVE API уже проверяет infra-deployer-status выше.
-    ct_exec curl -sS --connect-timeout 5 --max-time 15 \
-        -o /dev/null \
-        "https://$node:8006/api2/json/version" \
-        || die "910 не может проверить TLS соединение с PVE API"
-
-    ok "910 infra-deployer соответствует bootstrap-контракту"
+    ok "910 infra-deployer готов"
 }
 
 main() {
     local template_ref=""
-    local ct_was_created=0
 
     parse_args "$@"
     require_root_and_pve
@@ -1086,57 +767,35 @@ main() {
     ensure_host_packages
     host_preflight
 
-    if [[ "$MODE" == "check" ]]; then
-        ensure_debian13_template >/dev/null
-        check_ready_state
-        exit 0
-    fi
-
     if assert_owned_ct; then
         info "Найден принадлежащий bootstrap LXC $CTID"
-        warn_ct_drift
     else
-        backup_host_config
+        [[ "$MODE" != "check" ]] || die "LXC $CTID отсутствует"
         template_ref=$(ensure_debian13_template)
         create_infra_deployer "$template_ref"
-        ct_was_created=1
     fi
 
     ensure_ct_running
     wait_ct_network
 
-    if ct_exec test -f "$CT_COMPLETE_MARKER" && [[ "$MODE" == "apply" ]]; then
-        ensure_api_identity
-        ensure_github_key
-        ensure_private_repo_access
-        checkout_private_project
-        run_private_setup
+    if [[ "$MODE" == "check" ]]; then
         check_ready_state
-
-        printf '\n%s%sPUBLIC BOOTSTRAP УСПЕШНО ЗАВЕРШЁН%s\n' \
-            "$C_BOLD" "$C_GREEN" "$C_RESET"
-        printf 'Дальнейшее управление инфраструктурой выполняется из LXC %s %s.\n' \
-            "$CTID" "$CT_HOSTNAME"
         exit 0
-    fi
-
-    if ((ct_was_created == 0)); then
-        backup_host_config
     fi
 
     bootstrap_ct_os
     install_pve_ca
-    ensure_api_identity
+    ensure_pve_access
     ensure_github_key
     ensure_private_repo_access
     checkout_private_project
     run_private_setup
     check_ready_state
+    cleanup_legacy_access
 
     printf '\n%s%sPUBLIC BOOTSTRAP УСПЕШНО ЗАВЕРШЁН%s\n' \
         "$C_BOLD" "$C_GREEN" "$C_RESET"
-    printf 'Дальнейшее управление инфраструктурой выполняется из LXC %s %s.\n' \
-        "$CTID" "$CT_HOSTNAME"
+    printf 'Единственная ручная операция — добавление GitHub Deploy Key при первом запуске.\n'
 }
 
 main "$@"
