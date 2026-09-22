@@ -61,6 +61,12 @@ jobs:
           grep -q 'configure_pve_access' bootstrap-pve.sh
           grep -q 'configure_infra_deployer' bootstrap-pve.sh
           grep -q 'verify_infra_deployer' bootstrap-pve.sh
+          grep -q -- '--remove' bootstrap-pve.sh
+          grep -q -- '--purge' bootstrap-pve.sh
+          grep -q 'remove_bootstrap 0' bootstrap-pve.sh
+          grep -q 'remove_bootstrap 1' bootstrap-pve.sh
+          grep -q 'HOST_TEMPLATE_MARKER=' bootstrap-pve.sh
+          grep -q 'remove_managed_pool_if_empty' bootstrap-pve.sh
 
       - name: Check whitespace errors
         run: git diff --check
