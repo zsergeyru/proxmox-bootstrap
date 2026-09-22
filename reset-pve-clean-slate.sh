@@ -233,35 +233,35 @@ remove_project_access() {
     done
 }
 
-pool_exists() {
-    pvesh get /pools/managed --output-format json >/dev/null 2>&1
-}
+remove_empty_pools() {
+    local poolid json members remaining_acls
 
-remove_managed_pool() {
-    local json members remaining_acls
+    log "Удаление пустых PVE pools"
 
-    pool_exists || return
-    json="$(pvesh get /pools/managed --output-format json)"
-    members="$(jq -r '(.members // []) | length' <<<"$json")"
+    while IFS= read -r poolid; do
+        [[ -n "$poolid" ]] || continue
 
-    if (( members > 0 )); then
-        warn "Pool managed не пуст. Неизвестные/оставшиеся объекты автоматически не удаляются:"
-        jq -r '(.members // [])[] | "  - \(.type // "?") \(.vmid // "?") \(.name // "")"' <<<"$json" >&2
-        warn "Pool managed оставлен, потому что в нём есть участники."
-        return
-    fi
+        json="$(pvesh get "/pools/$poolid" --output-format json)"
+        members="$(jq -r '(.members // []) | length' <<<"$json")"
 
-    remaining_acls="$(
-        pveum acl list --output-format json             | jq -r '[.[] | select(.path == "/pool/managed")] | length'
-    )"
-    if (( remaining_acls > 0 )); then
-        warn "На /pool/managed остались ACL неизвестных principal:"
-        pveum acl list --output-format json             | jq -r '.[] | select(.path == "/pool/managed") | "  - \(.type) \(.ugid) role=\(.roleid)"' >&2
-        warn "Pool managed оставлен из-за оставшихся ACL."
-        return
-    fi
+        if (( members > 0 )); then
+            warn "Pool $poolid не пуст и сохранён:"
+            jq -r '(.members // [])[] | "  - \(.type // "?") \(.vmid // "?") \(.name // "")"' <<<"$json" >&2
+            continue
+        fi
 
-    run "удалить пустой pool managed" pveum pool delete managed
+        remaining_acls="$(
+            pveum acl list --output-format json                 | jq -r --arg path "/pool/$poolid"                     '[.[] | select(.path == $path)] | length'
+        )"
+        if (( remaining_acls > 0 )); then
+            warn "Pool $poolid имеет оставшиеся ACL и сохранён."
+            continue
+        fi
+
+        run "удалить пустой pool $poolid" pveum pool delete "$poolid"
+    done < <(
+        pvesh get /pools --output-format json | jq -r '.[].poolid'
+    )
 }
 
 remove_linux_deployer() {
@@ -371,7 +371,7 @@ main() {
 
     remove_other_guests
     remove_project_access
-    remove_managed_pool
+    remove_empty_pools
     remove_linux_deployer
     remove_project_files
     remove_debian13_cache
