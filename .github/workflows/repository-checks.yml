@@ -62,6 +62,9 @@ jobs:
 
           grep -q '^main() {' bootstrap-pve.sh
           grep -q 'ensure_infra_deployer_ct' bootstrap-pve.sh
+          grep -q '^verify_ct_contract() {' bootstrap-pve.sh
+          grep -q 'verify_ct_contract' bootstrap-pve.sh
+          grep -q '/usr/local/sbin/infra-deployer-status --full' bootstrap-pve.sh
           grep -q 'ensure_host_github_key' bootstrap-pve.sh
           grep -q 'checkout_private_project' bootstrap-pve.sh
           grep -q 'configure_pve_access' bootstrap-pve.sh
