@@ -321,6 +321,194 @@ remove_debian13_cache() {
     remove_path /var/lib/vz/template/cache/debian13 "удалить старый Debian cloud-image cache"
 }
 
+restore_project_apt_changes() {
+    local active disabled ceph uri suite component release tmp
+
+    log "Откат изменений APT repositories старой схемы"
+
+    for active in \
+        /etc/apt/sources.list.d/pve-enterprise.list \
+        /etc/apt/sources.list.d/pve-enterprise.sources
+    do
+        disabled="${active}.disabled"
+        [[ -f "$disabled" ]] || continue
+
+        if [[ -e "$active" ]]; then
+            warn "Не восстанавливаю $active: активный файл уже существует."
+            continue
+        fi
+
+        run "восстановить исходный enterprise repository: $active" mv -- "$disabled" "$active"
+    done
+
+    # Старый PVE Configuration создавал этот no-subscription файл.
+    # Удаляем его только если сохранённый enterprise-файл доказывает, что
+    # старая схема действительно отключала enterprise repository.
+    if [[ -f /etc/apt/sources.list.d/pve-enterprise.sources.disabled \
+       || -f /etc/apt/sources.list.d/pve-enterprise.list.disabled \
+       || -f /etc/apt/sources.list.d/pve-enterprise.sources \
+          && -f /etc/apt/sources.list.d/proxmox.sources ]]
+    then
+        if [[ -f /etc/apt/sources.list.d/proxmox.sources ]] \
+            && grep -Fxq 'URIs: http://download.proxmox.com/debian/pve' /etc/apt/sources.list.d/proxmox.sources \
+            && grep -Fxq 'Suites: trixie' /etc/apt/sources.list.d/proxmox.sources \
+            && grep -Fxq 'Components: pve-no-subscription' /etc/apt/sources.list.d/proxmox.sources
+        then
+            run "удалить созданный проектом PVE no-subscription repository" \
+                rm -f /etc/apt/sources.list.d/proxmox.sources
+        fi
+    fi
+
+    remove_path /etc/apt/sources.list.d/pve-no-subscription.sources \
+        "удалить старый bootstrap no-subscription repository"
+
+    # Ceph repository старая схема меняла на месте без отдельного backup.
+    # Обратное преобразование выполняем только для точного шаблона PVE 9.
+    ceph=/etc/apt/sources.list.d/ceph.sources
+    if [[ -f "$ceph" ]]; then
+        uri="$(sed -n 's/^URIs:[[:space:]]*//p' "$ceph" | head -n1)"
+        suite="$(sed -n 's/^Suites:[[:space:]]*//p' "$ceph" | head -n1)"
+        component="$(sed -n 's/^Components:[[:space:]]*//p' "$ceph" | head -n1)"
+
+        if [[ "$uri" =~ ^https?://download\.proxmox\.com/debian/(ceph-[A-Za-z0-9._-]+)$ \
+           && "$suite" == "trixie" \
+           && "$component" == "no-subscription" ]]
+        then
+            release="${BASH_REMATCH[1]}"
+            if (( APPLY )); then
+                tmp="$(mktemp "${ceph}.reset.XXXXXX")"
+                sed \
+                    -e "s#^URIs:[[:space:]]*https\?://download\.proxmox\.com/debian/${release}[[:space:]]*$#URIs: https://enterprise.proxmox.com/debian/${release}#" \
+                    -e 's/^Components:[[:space:]]*no-subscription[[:space:]]*$/Components: enterprise/' \
+                    "$ceph" >"$tmp"
+                install -o root -g root -m 0644 "$tmp" "$ceph"
+                rm -f "$tmp"
+                printf '[УДАЛЕНИЕ] восстановить enterprise Ceph repository %s\n' "$release"
+                CHANGES=$((CHANGES + 1))
+            else
+                CHANGES=$((CHANGES + 1))
+                printf '[ПЛАН] восстановить enterprise Ceph repository %s\n' "$release"
+            fi
+        fi
+    fi
+}
+
+restore_storage_defaults() {
+    local content new_content
+
+    log "Откат project content type storage local"
+
+    content="$(pvesh get /storage/local --output-format json | jq -r '.content // ""')"
+    if ! tr ',' '\n' <<<"$content" | grep -qx snippets; then
+        return
+    fi
+
+    new_content="$(
+        tr ',' '\n' <<<"$content" \
+            | grep -vx snippets \
+            | paste -sd, -
+    )"
+    [[ -n "$new_content" ]] || die "Нельзя оставить storage local без content types"
+
+    run "убрать snippets из storage local (останется: $new_content)" \
+        pvesm set local --content "$new_content"
+}
+
+package_installed() {
+    dpkg-query -W -f='${db:Status-Status}\n' "$1" 2>/dev/null | grep -qx installed
+}
+
+apt_simulation_removals() {
+    apt-get -s "$@" 2>/dev/null \
+        | awk '$1 == "Remv" {print $2}'
+}
+
+assert_no_protected_package_removal() {
+    local action=$1
+    shift
+    local removals protected
+
+    removals="$(apt_simulation_removals "$@")"
+
+    protected="$(
+        grep -E '^(proxmox-ve|pve-manager|pve-cluster|pve-container|qemu-server|pve-qemu-kvm|proxmox-kernel|proxmox-default-kernel|openssh-server|openssh-client|curl|jq|ca-certificates|python3|apt|systemd|ifupdown2|libpve-)' \
+            <<<"$removals" || true
+    )"
+
+    if [[ -n "$protected" ]]; then
+        warn "$action пропущено: APT собирается удалить защищённые пакеты:"
+        sed 's/^/  - /' <<<"$protected" >&2
+        return 1
+    fi
+
+    return 0
+}
+
+remove_old_project_packages() {
+    local pkg
+    local -a installed=()
+    local -a candidates=(
+        git
+        python3-yaml
+        python3-jsonschema
+        mc
+        htop
+        tmux
+        smartmontools
+        lm-sensors
+    )
+
+    log "Удаление пакетов, которые устанавливала старая схема"
+
+    for pkg in "${candidates[@]}"; do
+        package_installed "$pkg" && installed+=("$pkg")
+    done
+
+    if (( ${#installed[@]} == 0 )); then
+        ok "Дополнительные пакеты старой схемы не установлены"
+        return
+    fi
+
+    info "Найдены дополнительные пакеты: ${installed[*]}"
+
+    if ! assert_no_protected_package_removal \
+        "Удаление дополнительных пакетов" \
+        purge -y "${installed[@]}"
+    then
+        return
+    fi
+
+    if (( APPLY )); then
+        CHANGES=$((CHANGES + 1))
+        printf '[УДАЛЕНИЕ] apt purge: %s\n' "${installed[*]}"
+        DEBIAN_FRONTEND=noninteractive apt-get purge -y "${installed[@]}"
+    else
+        CHANGES=$((CHANGES + 1))
+        printf '[ПЛАН] apt purge: %s\n' "${installed[*]}"
+    fi
+
+    if assert_no_protected_package_removal \
+        "APT autoremove" \
+        autoremove --purge -y
+    then
+        if (( APPLY )); then
+            CHANGES=$((CHANGES + 1))
+            printf '[УДАЛЕНИЕ] apt autoremove --purge\n'
+            DEBIAN_FRONTEND=noninteractive apt-get autoremove --purge -y
+        else
+            CHANGES=$((CHANGES + 1))
+            printf '[ПЛАН] apt autoremove --purge\n'
+        fi
+    fi
+
+    if (( APPLY )); then
+        apt-get clean
+    else
+        CHANGES=$((CHANGES + 1))
+        printf '[ПЛАН] очистить APT package cache\n'
+    fi
+}
+
 verify_final_state() {
     local extra_guests extra_users extra_groups
 
@@ -352,10 +540,15 @@ show_preserved_state() {
     cat <<EOF_KEEP
 - QEMU VM $KEEP_VMID со всеми её дисками и настройками;
 - vmbr0 и другая сеть PVE;
-- local/local-lvm и storage.cfg;
-- APT repositories;
-- установленные системные пакеты;
+- local/local-lvm как сами storage;
+- базовые пакеты, необходимые PVE, SSH и новому bootstrap;
 - сам Proxmox VE.
+
+Откатываются только подтверждённые изменения старого проекта:
+- snippets удаляется из content types storage local;
+- сохранённый enterprise repository восстанавливается из *.disabled;
+- точный Ceph no-subscription шаблон возвращается к enterprise;
+- дополнительные пакеты старой схемы удаляются только после безопасной APT-симуляции.
 EOF_KEEP
 }
 
@@ -375,6 +568,9 @@ main() {
     remove_linux_deployer
     remove_project_files
     remove_debian13_cache
+    remove_old_project_packages
+    restore_storage_defaults
+    restore_project_apt_changes
     show_preserved_state
     verify_final_state
 
