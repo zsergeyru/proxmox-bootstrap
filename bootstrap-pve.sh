@@ -19,7 +19,7 @@ TEMPLATE_STORAGE="local"
 
 PROJECT_BRANCH="infra-iac-redesign"
 
-GUEST_BOOTSTRAP_REF="a494c6a4baa43fa596ad2773ca5e198cff4c742c"
+GUEST_BOOTSTRAP_REF="88bff89fd9324044cbbceac1abba39ad6e3eae73"
 GUEST_BOOTSTRAP_URL="https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/${GUEST_BOOTSTRAP_REF}/bootstrap-910.sh"
 CT_BOOTSTRAP_DIR="/root/.infra-deployer-bootstrap"
 CT_GUEST_BOOTSTRAP="${CT_BOOTSTRAP_DIR}/bootstrap-910.sh"
