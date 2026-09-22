@@ -176,13 +176,28 @@ acquire_lock() {
 }
 
 ensure_host_packages() {
-    if dpkg -s jq >/dev/null 2>&1; then
-        return
-    fi
+    local missing="" pkg
+    local debian_sources="/etc/apt/sources.list.d/debian.sources"
 
-    [[ "$MODE" != "check" ]] || die "Для проверки не хватает пакета jq"
-    apt-get update
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends jq
+    for pkg in jq util-linux; do
+        dpkg -s "$pkg" >/dev/null 2>&1 || missing="$missing $pkg"
+    done
+
+    [[ -z "$missing" ]] && return
+
+    [[ "$MODE" != "check" ]] || die "Для проверки не хватает пакетов:$missing"
+    [[ -f "$debian_sources" ]]         || die "Не найден штатный Debian source PVE 9: $debian_sources"
+
+    log "Установка минимальных зависимостей bootstrap:$missing"
+
+    # На чистом PVE enterprise repository включён по умолчанию и без подписки
+    # может делать обычный apt-get update неуспешным. Для Debian-пакетов bootstrap
+    # обновляем только штатный Debian source, не меняя repository configuration PVE.
+    apt-get update         -o "Dir::Etc::sourcelist=$debian_sources"         -o "Dir::Etc::sourceparts=-"         -o "APT::Get::List-Cleanup=0"
+
+    # shellcheck disable=SC2086
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $missing
+    ok "Минимальные зависимости bootstrap установлены"
 }
 
 storage_exists() {
@@ -529,8 +544,8 @@ main() {
     parse_args "$@"
     require_root_and_pve
     info "Public Bootstrap v$PUBLIC_BOOTSTRAP_VERSION, режим: $MODE"
-    acquire_lock
     ensure_host_packages
+    acquire_lock
     host_preflight
 
     if assert_owned_ct; then
