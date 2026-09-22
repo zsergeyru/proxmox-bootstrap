@@ -590,7 +590,7 @@ assert_no_protected_package_removal() {
     removals="$(apt_simulation_removals "$@")"
 
     protected="$(
-        grep -E '^(proxmox-ve|pve-manager|pve-cluster|pve-container|qemu-server|pve-qemu-kvm|proxmox-(default-)?kernel($|-)|proxmox-kernel-|pve-kernel-|pve-firewall|pve-ha-manager|pve-storage|pve-common|libpve-|openssh-server|apt|dpkg|systemd|ifupdown2|lvm2|thin-provisioning-tools|grub-|initramfs-tools|bash|coreutils|libc6)($|[-0-9])' \
+        grep -E '^(proxmox-|pve-|libpve-|qemu-server$|openssh-server$|openssh-client$|apt$|dpkg$|systemd($|-)|ifupdown2$|lvm2$|thin-provisioning-tools$|grub-|initramfs-tools($|-)|bash$|coreutils$|libc6$|python3($|-)|util-linux$|curl$|ca-certificates$)' \
             <<<"$removals" || true
     )"
 
@@ -623,7 +623,7 @@ remove_non_initial_manual_packages() {
         if [[ -n "$INITIAL_STATUS_FILE" ]]; then
             info "Пакеты, которых не было в исходной установке: ${candidates[*]}"
         else
-            info "Пакеты, которые APT history подтверждает как реально установленные нашими транзакциями: ${candidates[*]}"
+            info "Пакеты, определённые по APT history и подтверждённым первым запускам как добавленные проектом: ${candidates[*]}"
         fi
 
         for pkg in "${candidates[@]}"; do
