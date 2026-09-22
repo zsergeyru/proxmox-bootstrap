@@ -6,7 +6,7 @@
 bootstrap-pve.sh
 ~~~
 
-Он всегда запускается только на PVE и линейно подготавливает LXC 910 infra-deployer.
+Он всегда запускается только на PVE. Этапы оформлены отдельными функциями, а `main()` последовательно вызывает их в понятном порядке.
 
 ## Запуск
 
@@ -14,7 +14,7 @@ bootstrap-pve.sh
 curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/infra-iac-redesign/bootstrap-pve.sh | bash
 ~~~
 
-## Последовательность
+## Последовательность выполнения
 
 ~~~text
 PVE
