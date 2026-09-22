@@ -22,40 +22,42 @@ jobs:
       - name: Validate shell syntax
         run: |
           bash -n bootstrap-pve.sh
+          bash -n bootstrap-910.sh
           bash -n reset-pve-test-state.sh
           bash -n reset-pve-clean-slate.sh
 
       - name: Check help
         run: |
           bash bootstrap-pve.sh --help >/dev/null
+          bash bootstrap-910.sh --help >/dev/null
           bash reset-pve-test-state.sh --help >/dev/null
           bash reset-pve-clean-slate.sh --help >/dev/null
 
       - name: ShellCheck
-        run: shellcheck -S warning bootstrap-pve.sh reset-pve-test-state.sh reset-pve-clean-slate.sh
+        run: shellcheck -S warning bootstrap-pve.sh bootstrap-910.sh reset-pve-test-state.sh reset-pve-clean-slate.sh
 
       - name: Check public bootstrap boundary
         run: |
-          grep -q 'PRIVATE_HOST_ACCESS_PATH="scripts/infra-deployer/pve-bootstrap-access.sh"' bootstrap-pve.sh
-          grep -q 'local config="/etc/pve/storage.cfg"' bootstrap-pve.sh
-          grep -q 'pveam download "\$TEMPLATE_STORAGE" "\$template_name" >&2' bootstrap-pve.sh
-          grep -q 'bash "\$host_script"' bootstrap-pve.sh
+          grep -q 'GUEST_BOOTSTRAP_REF=' bootstrap-pve.sh
+          grep -q 'CT_HOST_HELPER=' bootstrap-pve.sh
           grep -q 'trap cleanup_host_runtime EXIT' bootstrap-pve.sh
-          if grep -q 'ensure_host_packages' bootstrap-pve.sh; then
-            echo "Public bootstrap must not install packages on the PVE host"
+          grep -q 'ct_exec cat "\$CT_HOST_HELPER"' bootstrap-pve.sh
+          grep -q 'PRIVATE_REPO="git@github.com:zsergeyru/proxmox.git"' bootstrap-910.sh
+          grep -q 'PRIVATE_SETUP_PATH="scripts/infra-deployer/setup.sh"' bootstrap-910.sh
+          grep -q 'PRIVATE_HOST_ACCESS_PATH="scripts/infra-deployer/pve-bootstrap-access.sh"' bootstrap-910.sh
+
+          if grep -Eq 'apt(-get)?[[:space:]]+(update|install)|ssh-keygen|api\.github\.com|git[[:space:]]+(clone|fetch|ls-remote)|PRIVATE_REPO=|PRIVATE_SETUP_PATH=|ca-certificates|openssh-client' bootstrap-pve.sh; then
+            echo "bootstrap-pve.sh must only create 910 and bridge trust; guest/project setup belongs inside 910"
             exit 1
           fi
-          python3 - <<'PY'
-          from pathlib import Path
-          text = Path("bootstrap-pve.sh").read_text()
-          host_part = text[:text.index("bootstrap_ct_os() {")]
-          forbidden = ("apt-get install", "apt install", "| jq", "jq -")
-          for item in forbidden:
-              if item in host_part:
-                  raise SystemExit(f"host bootstrap must not depend on/install extra packages: {item}")
-          PY
-          if grep -Eq 'PVEVMAdmin|PVEDatastoreUser|PVESDNUser|PVETemplateUser|InfraManagedGuest|root@pam!infra-deployer' bootstrap-pve.sh; then
+
+          if grep -Eq 'PVEVMAdmin|PVEDatastoreUser|PVESDNUser|PVETemplateUser|InfraManagedGuest|root@pam!infra-deployer' bootstrap-pve.sh bootstrap-910.sh; then
             echo "PVE access policy must stay in the private project"
+            exit 1
+          fi
+
+          if ! grep -q 'apt-get install -y --no-install-recommends' bootstrap-910.sh; then
+            echo "Guest bootstrap must own initial Debian package preparation"
             exit 1
           fi
 
