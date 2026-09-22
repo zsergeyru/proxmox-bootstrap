@@ -701,14 +701,10 @@ print_bootstrap_entrypoint() {
 
     log "Команда первого запуска bootstrap после очистки"
 
-    cat <<EOF_BOOTSTRAP
-apt-get update \
-  -o Dir::Etc::sourcelist=/etc/apt/sources.list.d/debian.sources \
-  -o Dir::Etc::sourceparts=- \
-  -o APT::Get::List-Cleanup=0 && \
-apt-get install -y --no-install-recommends ca-certificates curl && \
-curl -fsSL $url | bash
-EOF_BOOTSTRAP
+    command -v curl >/dev/null 2>&1 \
+        || die "После очистки отсутствует штатный curl; состояние PVE не соответствует проверенному чистому PVE 9"
+
+    printf 'curl -fsSL %s | bash\n' "$url"
 }
 
 verify_final_state() {
