@@ -96,7 +96,7 @@ detect_initial_status() {
     fi
 
     INITIAL_STATUS_FILE=""
-    warn "Исходный список пакетов установщика не найден. Для пакетной очистки используется точный список пакетов, которые устанавливали наши старые сценарии."
+    warn "Исходный список пакетов установщика не найден. Пакетная очистка будет восстановлена по APT history: удаляем только пакеты из Install: наших транзакций."
 }
 
 initial_status_stream() {
@@ -139,7 +139,7 @@ require_pve_root() {
     if [[ -n "$INITIAL_STATUS_FILE" ]]; then
         ok "Исходный пакетный состав найден: $INITIAL_STATUS_FILE"
     else
-        warn "Точного снимка пакетов ISO нет; очищаем только достоверно известные пакеты проекта."
+        warn "Точного снимка пакетов ISO нет; используем /var/log/apt/history.log* для определения реально установленных проектом пакетов."
     fi
 }
 
@@ -460,23 +460,94 @@ restore_storage_defaults() {
         pvesm set local --content "$new_content"
 }
 
-project_installed_packages() {
-    cat <<'EOF_PACKAGES'
-git
-openssh-client
-python3
-python3-yaml
-python3-jsonschema
-curl
-jq
-ca-certificates
-mc
-htop
-tmux
-smartmontools
-lm-sensors
-util-linux
-EOF_PACKAGES
+apt_history_stream() {
+    local file
+    local -a files=()
+
+    shopt -s nullglob
+    files=(/var/log/apt/history.log /var/log/apt/history.log.*)
+    shopt -u nullglob
+
+    ((${#files[@]} > 0)) || return 0
+
+    for file in "${files[@]}"; do
+        case "$file" in
+            *.gz) gzip -cd -- "$file" ;;
+            *) cat -- "$file" ;;
+        esac
+        printf '\n'
+    done
+}
+
+project_apt_installed_packages() {
+    apt_history_stream | awk '
+        function flush(    line, n, i, part, pkg) {
+            if (!matched || installs == "") {
+                commandline=""
+                installs=""
+                matched=0
+                return
+            }
+
+            line=installs
+            sub(/^Install:[[:space:]]*/, "", line)
+            n=split(line, part, /,[[:space:]]*/)
+            for (i=1; i<=n; i++) {
+                pkg=part[i]
+                sub(/[[:space:]].*$/, "", pkg)
+                sub(/:[^:[:space:]]+$/, "", pkg)
+                if (pkg != "") print pkg
+            }
+
+            commandline=""
+            installs=""
+            matched=0
+        }
+
+        /^Start-Date:/ {
+            flush()
+            next
+        }
+
+        /^Commandline:/ {
+            commandline=$0
+
+            if (commandline ~ /apt-get install/ &&
+                commandline ~ /python3-jsonschema/ &&
+                commandline ~ /smartmontools/ &&
+                commandline ~ /lm-sensors/) {
+                matched=1
+            }
+
+            if (commandline ~ /apt-get install/ &&
+                commandline ~ /ca-certificates/ &&
+                commandline ~ /curl/ &&
+                commandline ~ /jq/ &&
+                commandline ~ /util-linux/) {
+                matched=1
+            }
+
+            if (commandline ~ /^Commandline:[[:space:]]+apt-get install -y --no-install-recommends jq[[:space:]]*$/) {
+                matched=1
+            }
+
+            next
+        }
+
+        /^Install:/ {
+            installs=$0
+            next
+        }
+
+        /^End-Date:/ {
+            flush()
+            next
+        }
+
+        END {
+            flush()
+        }
+    ' | sort -u
 }
 
 manual_extra_packages() {
@@ -484,9 +555,10 @@ manual_extra_packages() {
         comm -23 \
             <(apt-mark showmanual | sort -u) \
             <(initial_package_list)
-    else
-        project_installed_packages
+        return
     fi
+
+    project_apt_installed_packages
 }
 
 apt_simulation_removals() {
@@ -535,7 +607,7 @@ remove_non_initial_manual_packages() {
         if [[ -n "$INITIAL_STATUS_FILE" ]]; then
             info "Пакеты, которых не было в исходной установке: ${candidates[*]}"
         else
-            info "Пакеты, которые устанавливали наши сценарии и которые сейчас установлены: ${candidates[*]}"
+            info "Пакеты, которые APT history подтверждает как реально установленные нашими транзакциями: ${candidates[*]}"
         fi
 
         for pkg in "${candidates[@]}"; do
@@ -633,7 +705,7 @@ show_preserved_state() {
 - сохранённый enterprise repository восстанавливается из *.disabled;
 - точный Ceph no-subscription шаблон возвращается к enterprise;
 - при наличии снимка удаляются вручную добавленные после установки пакеты;
-- без снимка удаляется точный набор пакетов, который ставили наши старые сценарии;
+- без снимка используются записи Install: из /var/log/apt/history.log* только для наших apt-транзакций;
 - любое удаление сначала проверяется APT-симуляцией на сохранность PVE.
 EOF_KEEP
 }
