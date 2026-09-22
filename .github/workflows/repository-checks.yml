@@ -22,6 +22,9 @@ jobs:
       - name: Validate shell syntax
         run: bash -n bootstrap-pve.sh
 
+      - name: Check bootstrap help
+        run: bash bootstrap-pve.sh --help >/dev/null
+
       - name: ShellCheck
         run: shellcheck -S warning bootstrap-pve.sh
 
