@@ -321,6 +321,8 @@ remove_debian13_cache() {
     remove_path /var/lib/vz/template/cache/debian13 "удалить старый Debian cloud-image cache"
 }
 
+# BASH_REMATCH[1] ниже — элемент массива regex-match, а не позиционный параметр.
+# shellcheck disable=SC2120
 restore_project_apt_changes() {
     local active disabled ceph uri suite component release tmp
 
