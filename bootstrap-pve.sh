@@ -483,7 +483,7 @@ ensure_pve_name_resolution_in_ct() {
         return
     fi
 
-    ct_exec sh -c "awk '$2 != \"$node\" {print}' /etc/hosts > /etc/hosts.bootstrap && printf '%s %s\n' '$host_ip' '$node' >> /etc/hosts.bootstrap && cat /etc/hosts.bootstrap > /etc/hosts && rm -f /etc/hosts.bootstrap"
+    ct_exec sh -c "grep -vE '[[:space:]]$node([[:space:]]|$)' /etc/hosts > /etc/hosts.bootstrap || true; printf '%s %s\n' '$host_ip' '$node' >> /etc/hosts.bootstrap; cat /etc/hosts.bootstrap > /etc/hosts; rm -f /etc/hosts.bootstrap"
 
     resolved_ip="$(ct_exec getent ahostsv4 "$node" 2>/dev/null | awk 'NR == 1 {print $1}' || true)"
     [[ "$resolved_ip" == "$host_ip" ]]         || die "Не удалось настроить разрешение имени '$node' внутри LXC $CTID"
