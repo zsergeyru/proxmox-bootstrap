@@ -102,7 +102,7 @@ validate_ipv4() {
 
 validate_ipv4_cidr() {
     local value=$1 ip prefix
-    [[ "$value" == */* ]] || return 1
+    [[ "$value" =~ ^[^/]+/[0-9]{1,2}$ ]] || return 1
     ip=$(printf '%s' "$value" | cut -d/ -f1)
     prefix=$(printf '%s' "$value" | cut -d/ -f2)
     validate_ipv4 "$ip" || return 1
@@ -182,8 +182,7 @@ acquire_lock() {
 ensure_host_packages() {
     local missing="" pkg
     for pkg in ca-certificates curl jq util-linux; do
-        dpkg-query -W -f='$Status' "$pkg" 2>/dev/null | grep -q '^install ok installed$' \
-            || missing="$missing $pkg"
+        dpkg -s "$pkg" >/dev/null 2>&1 || missing="$missing $pkg"
     done
 
     if [[ -z "$missing" ]]; then
@@ -351,7 +350,7 @@ warn_ct_drift() {
     [[ "$actual" == "1" ]] || die "LXC $CTID должен быть unprivileged=1"
 
     actual=$(ct_config_value protection)
-    [[ "$actual" == "1" ]] || warn "LXC $CTID: protection не включён"
+    [[ "$actual" == "1" ]] || die "LXC $CTID: protection должен быть включён"
 
     actual=$(ct_config_value onboot)
     [[ "$actual" == "1" ]] || warn "LXC $CTID: onboot не включён"
@@ -359,6 +358,14 @@ warn_ct_drift() {
     actual=$(ct_config_value features)
     [[ "$actual" == *"nesting=1"* && "$actual" == *"keyctl=1"* ]] \
         || warn "LXC $CTID: ожидаются features nesting=1,keyctl=1"
+
+    actual=$(ct_config_value rootfs)
+    [[ "$actual" == "$CT_STORAGE:"* ]] \
+        || warn "LXC $CTID: rootfs находится не в ожидаемом storage $CT_STORAGE"
+
+    actual=$(ct_config_value net0)
+    [[ "$actual" == *"bridge=$CT_BRIDGE"* ]] \
+        || warn "LXC $CTID: net0 использует не ожидаемый bridge $CT_BRIDGE"
 }
 
 build_net0() {
@@ -718,6 +725,7 @@ main() {
     host_preflight
 
     if [[ "$MODE" == "check" ]]; then
+        ensure_debian13_template >/dev/null
         check_ready_state
         exit 0
     fi
