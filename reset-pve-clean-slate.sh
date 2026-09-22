@@ -470,8 +470,10 @@ restore_storage_defaults() {
         pvesm set local --content "$new_content"
 }
 
-package_installed() {
-    dpkg-query -W -f='${db:Status-Status}\n' "$1" 2>/dev/null | grep -qx installed
+manual_extra_packages() {
+    comm -23 \
+        <(apt-mark showmanual | sort -u) \
+        <(initial_package_list)
 }
 
 apt_simulation_removals() {
@@ -487,12 +489,12 @@ assert_no_protected_package_removal() {
     removals="$(apt_simulation_removals "$@")"
 
     protected="$(
-        grep -E '^(proxmox-ve|pve-manager|pve-cluster|pve-container|qemu-server|pve-qemu-kvm|proxmox-kernel|proxmox-default-kernel|openssh-server|openssh-client|curl|jq|ca-certificates|python3|apt|systemd|ifupdown2|libpve-)' \
+        grep -E '^(proxmox-ve|pve-manager|pve-cluster|pve-container|qemu-server|pve-qemu-kvm|proxmox-(default-)?kernel|proxmox-kernel-|pve-kernel-|pve-firewall|pve-ha-manager|pve-storage|pve-common|libpve-|openssh-server|apt|dpkg|systemd|ifupdown2|lvm2|thin-provisioning-tools|grub-|initramfs-tools|bash|coreutils|libc6)$' \
             <<<"$removals" || true
     )"
 
     if [[ -n "$protected" ]]; then
-        warn "$action пропущено: APT собирается удалить защищённые пакеты:"
+        warn "$action пропущено: APT собирается удалить базовые пакеты PVE/Debian:"
         sed 's/^/  - /' <<<"$protected" >&2
         return 1
     fi
@@ -500,69 +502,88 @@ assert_no_protected_package_removal() {
     return 0
 }
 
-remove_old_project_packages() {
+remove_non_initial_manual_packages() {
     local pkg
-    local -a installed=()
-    local -a candidates=(
-        git
-        python3-yaml
-        python3-jsonschema
-        mc
-        htop
-        tmux
-        smartmontools
-        lm-sensors
-    )
+    local -a candidates=()
+    local -a safe=()
 
-    log "Удаление пакетов, которые устанавливала старая схема"
+    log "Возврат пакетного состава к исходной установке PVE"
 
-    for pkg in "${candidates[@]}"; do
-        package_installed "$pkg" && installed+=("$pkg")
-    done
+    while IFS= read -r pkg; do
+        [[ -n "$pkg" ]] || continue
+        dpkg-query -W -f='${db:Status-Status}\n' "$pkg" 2>/dev/null | grep -qx installed \
+            || continue
+        candidates+=("$pkg")
+    done < <(manual_extra_packages)
 
-    if (( ${#installed[@]} == 0 )); then
-        ok "Дополнительные пакеты старой схемы не установлены"
-        return
-    fi
-
-    info "Найдены дополнительные пакеты: ${installed[*]}"
-
-    if ! assert_no_protected_package_removal \
-        "Удаление дополнительных пакетов" \
-        purge -y "${installed[@]}"
-    then
-        return
-    fi
-
-    if (( APPLY )); then
-        CHANGES=$((CHANGES + 1))
-        printf '[УДАЛЕНИЕ] apt purge: %s\n' "${installed[*]}"
-        DEBIAN_FRONTEND=noninteractive apt-get purge -y "${installed[@]}"
+    if (( ${#candidates[@]} == 0 )); then
+        ok "Дополнительных вручную установленных пакетов нет"
     else
-        CHANGES=$((CHANGES + 1))
-        printf '[ПЛАН] apt purge: %s\n' "${installed[*]}"
+        info "Пакеты, которых не было в исходной установке: ${candidates[*]}"
+
+        for pkg in "${candidates[@]}"; do
+            if assert_no_protected_package_removal "Удаление $pkg" purge -y "$pkg"; then
+                safe+=("$pkg")
+            else
+                warn "Пакет $pkg оставлен как необходимый текущему PVE"
+            fi
+        done
+
+        if (( ${#safe[@]} > 0 )); then
+            if assert_no_protected_package_removal \
+                "Общее удаление дополнительных пакетов" \
+                purge -y "${safe[@]}"
+            then
+                if (( APPLY )); then
+                    CHANGES=$((CHANGES + 1))
+                    printf '[УДАЛЕНИЕ] apt purge: %s\n' "${safe[*]}"
+                    DEBIAN_FRONTEND=noninteractive apt-get purge -y "${safe[@]}"
+                else
+                    CHANGES=$((CHANGES + 1))
+                    printf '[ПЛАН] apt purge: %s\n' "${safe[*]}"
+                fi
+            fi
+        fi
     fi
 
-    if assert_no_protected_package_removal \
-        "APT autoremove" \
-        autoremove --purge -y
-    then
+    if assert_no_protected_package_removal "APT autoremove" autoremove --purge -y; then
         if (( APPLY )); then
             CHANGES=$((CHANGES + 1))
             printf '[УДАЛЕНИЕ] apt autoremove --purge\n'
             DEBIAN_FRONTEND=noninteractive apt-get autoremove --purge -y
+            apt-get clean
         else
             CHANGES=$((CHANGES + 1))
             printf '[ПЛАН] apt autoremove --purge\n'
+            CHANGES=$((CHANGES + 1))
+            printf '[ПЛАН] очистить APT package cache\n'
         fi
     fi
+}
 
-    if (( APPLY )); then
-        apt-get clean
-    else
-        CHANGES=$((CHANGES + 1))
-        printf '[ПЛАН] очистить APT package cache\n'
-    fi
+print_bootstrap_entrypoint() {
+    local url="https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/infra-iac-redesign/bootstrap-pve.sh"
+
+    log "Команда первого запуска bootstrap после очистки"
+
+    case "$BOOTSTRAP_FETCHER" in
+        wget)
+            printf 'wget -qO- %s | bash\n' "$url"
+            ;;
+        curl)
+            printf 'curl -fsSL %s | bash\n' "$url"
+            ;;
+        apt)
+            cat <<EOF_BOOTSTRAP
+apt-get update \
+  -o Dir::Etc::sourcelist=/etc/apt/sources.list.d/debian.sources \
+  -o Dir::Etc::sourceparts=- \
+  -o APT::Get::List-Cleanup=0 && \
+apt-get install -y --no-install-recommends ca-certificates wget && \
+wget -qO- $url | bash
+EOF_BOOTSTRAP
+            ;;
+    esac
 }
 
 verify_final_state() {
@@ -597,14 +618,14 @@ show_preserved_state() {
 - QEMU VM $KEEP_VMID со всеми её дисками и настройками;
 - vmbr0 и другая сеть PVE;
 - local/local-lvm как сами storage;
-- базовые пакеты, необходимые PVE, SSH и новому bootstrap;
+- только пакетный состав исходной установки PVE плюс пакеты, которые текущий PVE уже не может безопасно удалить;
 - сам Proxmox VE.
 
 Откатываются только подтверждённые изменения старого проекта:
 - snippets удаляется из content types storage local;
 - сохранённый enterprise repository восстанавливается из *.disabled;
 - точный Ceph no-subscription шаблон возвращается к enterprise;
-- дополнительные пакеты старой схемы удаляются только после безопасной APT-симуляции.
+- все вручную установленные после исходной установки пакеты удаляются, если APT-симуляция подтверждает, что это не ломает PVE.
 EOF_KEEP
 }
 
@@ -624,11 +645,12 @@ main() {
     remove_linux_deployer
     remove_project_files
     remove_debian13_cache
-    remove_old_project_packages
     restore_storage_defaults
     restore_project_apt_changes
     show_preserved_state
     verify_final_state
+    remove_non_initial_manual_packages
+    print_bootstrap_entrypoint
 
     printf '\n'
     if (( APPLY )); then
