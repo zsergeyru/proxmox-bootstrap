@@ -452,6 +452,23 @@ restore_project_apt_changes() {
     fi
 }
 
+cleanup_ceph_source_artifacts() {
+    local path
+
+    log "Удаление временных и резервных файлов Ceph repository"
+
+    for path in \
+        /etc/apt/sources.list.d/ceph.sources.reset.* \
+        /etc/apt/sources.list.d/ceph.sources.tmp.* \
+        /etc/apt/sources.list.d/ceph.sources.bak-* \
+        /etc/apt/sources.list.d/ceph.sources.??????
+    do
+        [[ -e "$path" ]] || continue
+        [[ "$path" != "/etc/apt/sources.list.d/ceph.sources" ]] || continue
+        remove_path "$path" "удалить неактивный временный/резервный файл Ceph repository"
+    done
+}
+
 restore_storage_defaults() {
     local content new_content
 
@@ -757,6 +774,7 @@ main() {
     remove_debian13_cache
     restore_storage_defaults
     restore_project_apt_changes
+    cleanup_ceph_source_artifacts
     show_preserved_state
     verify_final_state
     remove_non_initial_manual_packages
