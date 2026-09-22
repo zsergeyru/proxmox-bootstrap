@@ -423,10 +423,23 @@ restore_project_apt_changes() {
             release="${BASH_REMATCH[1]}"
             if (( APPLY )); then
                 tmp="$(mktemp "${ceph}.reset.XXXXXX")"
-                sed \
-                    -e "s#^URIs:[[:space:]]*https\?://download\.proxmox\.com/debian/${release}[[:space:]]*$#URIs: https://enterprise.proxmox.com/debian/${release}#" \
-                    -e 's/^Components:[[:space:]]*no-subscription[[:space:]]*$/Components: enterprise/' \
-                    "$ceph" >"$tmp"
+                awk -v release="$release" '
+                    /^URIs:[[:space:]]*https?:\/\/download\.proxmox\.com\/debian\/ceph-[A-Za-z0-9._-]+[[:space:]]*$/ {
+                        print "URIs: https://enterprise.proxmox.com/debian/" release
+                        next
+                    }
+                    /^Components:[[:space:]]*no-subscription[[:space:]]*$/ {
+                        print "Components: enterprise"
+                        next
+                    }
+                    { print }
+                ' "$ceph" >"$tmp"
+
+                grep -Fxq "URIs: https://enterprise.proxmox.com/debian/$release" "$tmp" \
+                    || { rm -f "$tmp"; die "Не удалось восстановить URI enterprise Ceph repository"; }
+                grep -Fxq "Components: enterprise" "$tmp" \
+                    || { rm -f "$tmp"; die "Не удалось восстановить component enterprise Ceph repository"; }
+
                 install -o root -g root -m 0644 "$tmp" "$ceph"
                 rm -f "$tmp"
                 printf '[УДАЛЕНИЕ] восстановить enterprise Ceph repository %s\n' "$release"
