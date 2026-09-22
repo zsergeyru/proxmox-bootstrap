@@ -702,8 +702,12 @@ run_private_setup() {
         || die "В ветке $PRIVATE_BRANCH закрытого проекта отсутствует $PRIVATE_SETUP_PATH"
 
     log "Передача управления настройке infra-deployer"
+    local recover_flag=0
+    [[ "$MODE" == "recover" ]] && recover_flag=1
+
     ct_exec env \
         INFRA_DEPLOYER_BOOTSTRAP=1 \
+        INFRA_DEPLOYER_RECOVER="$recover_flag" \
         PVE_API_SECRET_FILE="$CT_SECRET_FILE" \
         bash "$setup"
 
