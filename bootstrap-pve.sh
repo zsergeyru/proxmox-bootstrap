@@ -708,6 +708,7 @@ run_private_setup() {
     ct_exec env \
         INFRA_DEPLOYER_BOOTSTRAP=1 \
         INFRA_DEPLOYER_RECOVER="$recover_flag" \
+        INFRA_PROJECT_BRANCH="$PRIVATE_BRANCH" \
         PVE_API_SECRET_FILE="$CT_SECRET_FILE" \
         bash "$setup"
 
@@ -741,6 +742,10 @@ check_ready_state() {
     assert_api_token_privsep
     ct_exec test -f "$CT_COMPLETE_MARKER" \
         || die "LXC $CTID существует, но первоначальная настройка ещё не завершена"
+    ct_exec test -x /usr/local/sbin/infra-deployer-status \
+        || die "В 910 отсутствует команда infra-deployer-status"
+    ct_exec /usr/local/sbin/infra-deployer-status >/dev/null \
+        || die "Внутренняя проверка infra-deployer завершилась ошибкой"
     ct_exec ip -4 route show default | grep -q '^default ' \
         || die "В 910 нет IPv4 default route"
 
