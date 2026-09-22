@@ -2,27 +2,36 @@
 
 Публичный bootstrap для первоначального развёртывания и обслуживания `910 infra-deployer` на Proxmox VE.
 
-## Запуск
+## Быстрый запуск
 
-Обычная установка или повторное применение:
+Обычная установка или повторное применение без параметров — сразу из GitHub:
 
 ~~~bash
 curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/infra-iac-redesign/bootstrap-pve.sh | bash
 ~~~
 
+## Запуск с параметрами
+
+Если нужны `--help`, проверка, восстановление, удаление или другие параметры, сначала скачайте сценарий:
+
+~~~bash
+curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/infra-iac-redesign/bootstrap-pve.sh -o bootstrap-pve.sh
+chmod +x bootstrap-pve.sh
+~~~
+
 Справка:
 
 ~~~bash
-curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/infra-iac-redesign/bootstrap-pve.sh | bash -s -- --help
+./bootstrap-pve.sh --help
 ~~~
 
 Основные режимы:
 
 ~~~bash
-curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/infra-iac-redesign/bootstrap-pve.sh | bash -s -- --check
-curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/infra-iac-redesign/bootstrap-pve.sh | bash -s -- --recover
-curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/infra-iac-redesign/bootstrap-pve.sh | bash -s -- --remove
-curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/infra-iac-redesign/bootstrap-pve.sh | bash -s -- --purge
+./bootstrap-pve.sh --check
+./bootstrap-pve.sh --recover
+./bootstrap-pve.sh --remove
+./bootstrap-pve.sh --purge
 ~~~
 
 При первом запуске потребуется один раз добавить показанный GitHub Deploy Key в закрытый репозиторий как read-only.
