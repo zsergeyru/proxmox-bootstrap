@@ -26,6 +26,12 @@ PRIVATE_HOST_ACCESS_PATH="scripts/infra-deployer/pve-bootstrap-access.sh"
 HOST_BOOTSTRAP_DIR="/root/.config/proxmox-bootstrap"
 HOST_GITHUB_KEY="${HOST_BOOTSTRAP_DIR}/github_proxmox_repo_ed25519"
 HOST_GITHUB_PUB="${HOST_GITHUB_KEY}.pub"
+HOST_TEMPLATE_MARKER="${HOST_BOOTSTRAP_DIR}/debian13-template.ref"
+
+API_USER="root@pam"
+API_TOKEN_NAME="infra-deployer"
+API_TOKEN_ID="${API_USER}!${API_TOKEN_NAME}"
+MANAGED_POOL="managed"
 
 CT_BOOTSTRAP_DIR="/root/.infra-deployer-bootstrap"
 CT_SECRET_FILE="${CT_BOOTSTRAP_DIR}/pve-api.env"
@@ -80,6 +86,8 @@ usage() {
   без параметра режима     создать или подготовить 910 infra-deployer
   --check                  только проверить готовность существующего 910
   --recover                восстановить/ротировать bootstrap credentials
+  --remove                 мягко удалить infra-deployer, сохранив ключ и template
+  --purge                  полностью удалить состояние bootstrap
 
 Сеть 910:
   по умолчанию             DHCP
@@ -126,6 +134,14 @@ parse_args() {
                 [[ "$MODE" == "apply" ]] || die "Можно выбрать только один режим"
                 MODE="recover"
                 ;;
+            --remove)
+                [[ "$MODE" == "apply" ]] || die "Можно выбрать только один режим"
+                MODE="remove"
+                ;;
+            --purge)
+                [[ "$MODE" == "apply" ]] || die "Можно выбрать только один режим"
+                MODE="purge"
+                ;;
             --ip)
                 shift
                 (($#)) || die "После --ip требуется CIDR"
@@ -161,6 +177,10 @@ parse_args() {
     fi
 
     [[ "$PROJECT_BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]]         || die "Некорректное имя ветки проекта: $PROJECT_BRANCH"
+
+    if [[ "$MODE" == "remove" || "$MODE" == "purge" ]]; then
+        [[ "$CT_IP" == "dhcp" && -z "$CT_GATEWAY" ]]             || die "--ip и --gateway не используются вместе с режимом удаления"
+    fi
 }
 
 # --- PVE ------------------------------------------------------------------
@@ -169,7 +189,7 @@ require_root_and_pve() {
     local cmd
     [[ $EUID -eq 0 ]] || die "Запустите скрипт от root на PVE"
 
-    for cmd in pveversion pvesh pct qm pveam pvesm bash ssh-keygen; do
+    for cmd in pveversion pvesh pveum pct qm pveam pvesm bash ssh-keygen perl; do
         command -v "$cmd" >/dev/null 2>&1 || die "Не найдена обязательная штатная команда: $cmd"
     done
 
@@ -263,6 +283,10 @@ ensure_debian13_template() {
     pveam download "$TEMPLATE_STORAGE" "$template_name" >&2
     local_ref=$(find_local_debian13_template)
     [[ -n "$local_ref" ]] || die "Debian 13 template скачан, но не найден локально"
+
+    install -d -o root -g root -m 0700 "$HOST_BOOTSTRAP_DIR"
+    printf '%s\n' "$local_ref" >"$HOST_TEMPLATE_MARKER"
+    chmod 0600 "$HOST_TEMPLATE_MARKER"
 
     ok "Debian 13 LXC template готов: $local_ref" >&2
     printf '%s\n' "$local_ref"
@@ -566,6 +590,216 @@ verify_infra_deployer() {
         /usr/local/sbin/infra-deployer-status
 
     ok "910 infra-deployer готов"
+}
+
+api_token_exists() {
+    pveum user token list "$API_USER" --output-format json 2>/dev/null         | perl -MJSON::PP -0777 -e '
+            my $token = shift;
+            my $rows = decode_json(<STDIN>);
+            exit((grep { (($_->{tokenid} // q{}) eq $token) } @$rows) ? 0 : 1);
+        ' "$API_TOKEN_NAME"
+}
+
+remove_api_token_access() {
+    local path role
+
+    log "Удаление доступа infra-deployer к PVE"
+
+    while IFS=
+    local template_ref=""
+
+    if assert_owned_ct; then
+        info "Найден принадлежащий bootstrap LXC $CTID"
+        return
+    fi
+
+    [[ "$MODE" != "check" ]] || die "LXC $CTID отсутствует"
+
+    template_ref=$(ensure_debian13_template)
+    create_infra_deployer "$template_ref"
+}
+
+report_success() {
+    printf '\n%s%sPUBLIC BOOTSTRAP УСПЕШНО ЗАВЕРШЁН%s\n' \
+        "$C_BOLD" "$C_GREEN" "$C_RESET"
+    printf 'GitHub Deploy Key хранится на PVE: %s\n' "$HOST_GITHUB_KEY"
+}
+
+main() {
+    parse_args "$@"
+
+    require_root_and_pve
+    info "Public Bootstrap v$PUBLIC_BOOTSTRAP_VERSION, режим: $MODE"
+
+    acquire_lock
+
+    if [[ "$MODE" == "remove" ]]; then
+        remove_bootstrap 0
+        return
+    fi
+
+    if [[ "$MODE" == "purge" ]]; then
+        remove_bootstrap 1
+        return
+    fi
+
+    host_preflight
+    ensure_infra_deployer_ct
+    ensure_ct_running
+    wait_ct_network
+
+    if [[ "$MODE" == "check" ]]; then
+        verify_infra_deployer
+        return
+    fi
+
+    ensure_host_github_key
+    prepare_infra_deployer_os
+    push_github_key_to_ct
+    ensure_private_repo_access
+    checkout_private_project
+    configure_pve_access
+    configure_infra_deployer
+    verify_infra_deployer
+
+    report_success
+}
+
+main "$@"
+\t' read -r path role; do
+        [[ -n "$path" && -n "$role" ]] || continue
+        pveum acl delete "$path"             --tokens "$API_TOKEN_ID"             --roles "$role"
+    done < <(
+        pveum acl list --output-format json             | perl -MJSON::PP -0777 -e '
+                my $token = shift;
+                my $rows = decode_json(<STDIN>);
+                for my $row (@$rows) {
+                    next unless (($row->{type} // q{}) eq q{token});
+                    next unless (($row->{ugid} // q{}) eq $token);
+                    print(($row->{path} // q{}), "\t", ($row->{roleid} // q{}), "\n");
+                }
+            ' "$API_TOKEN_ID"
+    )
+
+    if api_token_exists; then
+        pveum user token remove "$API_USER" "$API_TOKEN_NAME"
+        ok "PVE API token $API_TOKEN_ID удалён"
+    else
+        ok "PVE API token уже отсутствует"
+    fi
+}
+
+remove_infra_deployer_ct() {
+    local status lock protection
+
+    vm_exists         && die "VMID $CTID занят виртуальной машиной. Удаление запрещено."
+
+    if ! ct_exists; then
+        ok "LXC $CTID уже отсутствует"
+        return
+    fi
+
+    assert_owned_ct         || die "LXC $CTID не принадлежит bootstrap"
+
+    lock=$(ct_config_value lock)
+    [[ -z "$lock" ]]         || die "LXC $CTID заблокирован PVE (lock=$lock). Автоматическое снятие lock запрещено."
+
+    status=$(pct status "$CTID" | awk '{print $2}')
+    protection=$(ct_config_value protection)
+
+    log "Удаление LXC $CTID $CT_HOSTNAME"
+
+    if [[ "$status" == "running" ]]; then
+        pct stop "$CTID"
+    fi
+
+    if [[ "$protection" == "1" ]]; then
+        pct set "$CTID" --protection 0
+    fi
+
+    pct destroy "$CTID" --purge 1
+    ok "LXC $CTID удалён"
+}
+
+managed_pool_exists() {
+    pvesh get "/pools/$MANAGED_POOL" --output-format json >/dev/null 2>&1
+}
+
+remove_managed_pool_if_empty() {
+    local json members remaining_acls
+
+    managed_pool_exists || {
+        ok "Pool $MANAGED_POOL уже отсутствует"
+        return
+    }
+
+    json=$(pvesh get "/pools/$MANAGED_POOL" --output-format json)
+    members=$(
+        perl -MJSON::PP -0777 -e '
+            my $row = decode_json(<STDIN>);
+            print scalar(@{ $row->{members} // [] });
+        ' <<<"$json"
+    )
+
+    if ((members > 0)); then
+        warn "Pool $MANAGED_POOL не пуст и сохранён"
+        return
+    fi
+
+    remaining_acls=$(
+        pveum acl list --output-format json             | perl -MJSON::PP -0777 -e '
+                my $path = shift;
+                my $rows = decode_json(<STDIN>);
+                my $count = grep { (($_->{path} // q{}) eq $path) } @$rows;
+                print $count;
+            ' "/pool/$MANAGED_POOL"
+    )
+
+    if ((remaining_acls > 0)); then
+        warn "Pool $MANAGED_POOL имеет сторонние ACL и сохранён"
+        return
+    fi
+
+    pveum pool delete "$MANAGED_POOL"
+    ok "Пустой pool $MANAGED_POOL удалён"
+}
+
+remove_owned_template() {
+    local volume
+
+    [[ -s "$HOST_TEMPLATE_MARKER" ]] || {
+        info "Bootstrap-owned Debian template не отмечен — template сохранён"
+        return
+    }
+
+    volume=$(head -n1 "$HOST_TEMPLATE_MARKER")
+
+    if [[ ! "$volume" =~ ^local:vztmpl/debian-13-standard_.*_amd64\.tar\.(zst|gz)$ ]]; then
+        warn "Некорректная метка Debian template: $volume"
+        return
+    fi
+
+    if pveam list "$TEMPLATE_STORAGE" 2>/dev/null         | awk -v volume="$volume" '$1 == volume { found=1 } END { exit(found ? 0 : 1) }'; then
+        pveam remove "$volume"
+        ok "Bootstrap-owned Debian template удалён: $volume"
+    fi
+}
+
+remove_bootstrap() {
+    local full=$1
+
+    remove_infra_deployer_ct
+    remove_api_token_access
+    remove_managed_pool_if_empty
+
+    if ((full)); then
+        log "Полное удаление bootstrap-состояния"
+        remove_owned_template
+        rm -rf -- "$HOST_BOOTSTRAP_DIR"
+        ok "Постоянное bootstrap-состояние на PVE удалено"
+    else
+        ok "Мягкое удаление завершено; GitHub key и Debian template сохранены"
+    fi
 }
 
 ensure_infra_deployer_ct() {
