@@ -86,7 +86,7 @@ usage() {
   без параметра режима     создать или подготовить 910 infra-deployer
   --check                  только проверить готовность существующего 910
   --recover                восстановить/ротировать bootstrap credentials
-  --remove                 мягко удалить infra-deployer, сохранив ключ и template
+  --remove                 мягко удалить infra-deployer, сохранив постоянный GitHub Deploy Key
   --purge                  полностью удалить состояние bootstrap
 
 Сеть 910:
