@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+# Debian minimal image may inherit a host locale that is not generated inside LXC.
+# C.UTF-8 is provided by glibc and does not require the locales package.
+export LANG=C.UTF-8
+export LC_ALL=C.UTF-8
+
 # Публичный стартовый сценарий, который выполняется только внутри LXC 910.
 # Его задача — подготовить Debian, получить закрытый проект и передать ему управление.
 
@@ -90,6 +95,10 @@ parse_args() {
 require_guest_root() {
     [[ $EUID -eq 0 ]] || die "Сценарий должен выполняться от root внутри LXC 910"
     [[ -f /etc/debian_version ]] || die "Внутри 910 ожидается Debian"
+}
+
+persist_locale() {
+    printf 'LANG=C.UTF-8\n' >/etc/default/locale
 }
 
 ensure_base_packages() {
@@ -189,6 +198,7 @@ stage_host_helper() {
 }
 
 prepare() {
+    persist_locale
     ensure_base_packages
     ensure_github_key
     require_private_repo_access
