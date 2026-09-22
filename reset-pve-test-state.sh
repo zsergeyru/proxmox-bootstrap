@@ -236,7 +236,7 @@ pve_token_exists() {
 }
 
 remove_principal_acls() {
-    local kind=$1 principal=$2 option row path role
+    local kind=$1 principal=$2 option path role
     local acl_json
 
     acl_json="$(pveum acl list --output-format json)"
@@ -261,7 +261,8 @@ remove_principal_acls() {
 }
 
 remove_token() {
-    local userid=$1 token=$2 full="${userid}!${token}"
+    local userid=$1 token=$2 full
+    full="${userid}!${token}"
 
     remove_principal_acls token "$full"
     pve_token_exists "$userid" "$token" || return
