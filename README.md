@@ -115,6 +115,53 @@ features:    nesting=1,keyctl=1
 
 При ошибке выводятся последние строки этого файла.
 
+## Удаление
+
+Удаление выполняется тем же `bootstrap-pve.sh`.
+
+Мягкое удаление:
+
+~~~bash
+bootstrap-pve.sh --remove
+~~~
+
+Удаляет:
+
+~~~text
+LXC 910
+PVE API token root@pam!infra-deployer
+ACL этого token
+пустой pool managed
+~~~
+
+Сохраняет:
+
+~~~text
+/root/.config/proxmox-bootstrap/
+GitHub Deploy Key
+Debian 13 LXC template
+~~~
+
+Это удобно, если 910 нужно пересоздать: новый контейнер получит тот же GitHub Deploy Key.
+
+Полное удаление:
+
+~~~bash
+bootstrap-pve.sh --purge
+~~~
+
+Выполняет мягкое удаление и дополнительно удаляет:
+
+~~~text
+/root/.config/proxmox-bootstrap/
+GitHub Deploy Key
+Debian 13 LXC template, если bootstrap ранее отметил его как скачанный им
+~~~
+
+Чужой или заранее существовавший Debian template автоматически не удаляется.
+
+Оба режима защищают чужие объекты: VM с VMID 910, LXC без bootstrap-меток, непустой pool `managed`, VM 100 HAOS и хранилище `backup` не удаляются.
+
 ## Повторный запуск
 
 Обычный повторный запуск приводит существующий 910 к актуальному состоянию.
