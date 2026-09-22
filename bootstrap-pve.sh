@@ -175,41 +175,38 @@ acquire_lock() {
     ok "Получена блокировка bootstrap"
 }
 
-ensure_host_packages() {
-    local missing="" pkg
-    local debian_sources="/etc/apt/sources.list.d/debian.sources"
-
-    for pkg in jq util-linux; do
-        dpkg -s "$pkg" >/dev/null 2>&1 || missing="$missing $pkg"
-    done
-
-    [[ -z "$missing" ]] && return
-
-    [[ "$MODE" != "check" ]] || die "Для проверки не хватает пакетов:$missing"
-    [[ -f "$debian_sources" ]]         || die "Не найден штатный Debian source PVE 9: $debian_sources"
-
-    log "Установка минимальных зависимостей bootstrap:$missing"
-
-    # На чистом PVE enterprise repository включён по умолчанию и без подписки
-    # может делать обычный apt-get update неуспешным. Для Debian-пакетов bootstrap
-    # обновляем только штатный Debian source, не меняя repository configuration PVE.
-    apt-get update         -o "Dir::Etc::sourcelist=$debian_sources"         -o "Dir::Etc::sourceparts=-"         -o "APT::Get::List-Cleanup=0"
-
-    # shellcheck disable=SC2086
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $missing
-    ok "Минимальные зависимости bootstrap установлены"
-}
-
 storage_exists() {
     pvesm status --storage "$1" >/dev/null 2>&1
 }
 
 storage_has_content() {
     local storage=$1 content=$2
-    pvesh get "/storage/$storage" --output-format json 2>/dev/null \
-        | jq -r '.content // ""' \
-        | tr ',' '\n' \
-        | grep -qx "$content"
+    local config="/etc/pve/storage.cfg"
+
+    [[ -r "$config" ]] || return 1
+
+    awk -v storage="$storage" -v wanted="$content" '
+        /^[^[:space:]][^:]*:[[:space:]]+/ {
+            in_storage = ($2 == storage)
+            next
+        }
+
+        in_storage && /^[[:space:]]+content[[:space:]]+/ {
+            value = $0
+            sub(/^[[:space:]]+content[[:space:]]+/, "", value)
+            count = split(value, parts, ",")
+            for (i = 1; i <= count; i++) {
+                if (parts[i] == wanted) {
+                    found = 1
+                    exit
+                }
+            }
+        }
+
+        END {
+            exit(found ? 0 : 1)
+        }
+    ' "$config"
 }
 
 host_preflight() {
@@ -544,7 +541,6 @@ main() {
     parse_args "$@"
     require_root_and_pve
     info "Public Bootstrap v$PUBLIC_BOOTSTRAP_VERSION, режим: $MODE"
-    ensure_host_packages
     acquire_lock
     host_preflight
 
