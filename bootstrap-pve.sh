@@ -466,7 +466,7 @@ checkout_private_project() {
 }
 
 run_host_access() {
-    local action=$1 source host_script
+    local source host_script
 
     source="$CT_PROJECT_DIR/$PRIVATE_HOST_ACCESS_PATH"
     host_script="$HOST_TMP_DIR/pve-bootstrap-access.sh"
@@ -482,7 +482,7 @@ run_host_access() {
     INFRA_DEPLOYER_CTID="$CTID" \
     INFRA_DEPLOYER_MODE="$MODE" \
     INFRA_DEPLOYER_SECRET_FILE="$CT_SECRET_FILE" \
-        "$host_script" "$action"
+        "$host_script"
 
     rm -f "$host_script"
 }
@@ -554,10 +554,9 @@ main() {
     ensure_private_repo_access
     checkout_private_project
 
-    run_host_access prepare
+    run_host_access
     run_private_setup
     check_ready_state
-    run_host_access cleanup
 
     printf '\n%s%sPUBLIC BOOTSTRAP УСПЕШНО ЗАВЕРШЁН%s\n' \
         "$C_BOLD" "$C_GREEN" "$C_RESET"
