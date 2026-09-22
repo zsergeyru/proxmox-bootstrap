@@ -5,11 +5,14 @@ set -Eeuo pipefail
 # Единственный сохраняемый гостевой объект — QEMU VM 100.
 # По умолчанию только показывает план. Реальные изменения только с --apply.
 #
-# Не изменяются сеть, storage.cfg, APT и установленные системные пакеты.
+# Не изменяются сеть и базовые PVE storage. Пакетный состав приводится
+# максимально близко к исходной установке по журналу установщика.
 
 KEEP_VMID=100
 APPLY=0
 CHANGES=0
+INITIAL_STATUS_FILE=""
+BOOTSTRAP_FETCHER=""
 
 C_RESET=""
 C_BOLD=""
@@ -78,25 +81,76 @@ parse_args() {
     done
 }
 
+detect_initial_status() {
+    if [[ -s /var/log/installer/status ]]; then
+        INITIAL_STATUS_FILE="/var/log/installer/status"
+        return
+    fi
+
+    if [[ -s /var/log/installer/initial-status.gz ]]; then
+        INITIAL_STATUS_FILE="/var/log/installer/initial-status.gz"
+        return
+    fi
+
+    die "Не найден исходный список пакетов установщика PVE. Нельзя гарантировать возврат к чистому состоянию."
+}
+
+initial_status_stream() {
+    case "$INITIAL_STATUS_FILE" in
+        *.gz) gzip -cd -- "$INITIAL_STATUS_FILE" ;;
+        *) cat -- "$INITIAL_STATUS_FILE" ;;
+    esac
+}
+
+initial_package_list() {
+    initial_status_stream | awk '$1 == "Package:" {print $2}' | sort -u
+}
+
+initial_package_exists() {
+    local package=$1
+    initial_package_list | grep -Fxq "$package"
+}
+
+detect_bootstrap_fetcher() {
+    if initial_package_exists wget && command -v wget >/dev/null 2>&1; then
+        BOOTSTRAP_FETCHER="wget"
+        return
+    fi
+
+    if initial_package_exists curl && command -v curl >/dev/null 2>&1; then
+        BOOTSTRAP_FETCHER="curl"
+        return
+    fi
+
+    BOOTSTRAP_FETCHER="apt"
+}
+
 require_pve_root() {
     local cmd node_count name
     [[ $EUID -eq 0 ]] || die "Запустите скрипт от root на PVE"
 
-    for cmd in pveversion pvesh pveum pct qm pveam jq getent; do
-        command -v "$cmd" >/dev/null 2>&1 || die "Не найдена обязательная команда: $cmd"
+    for cmd in pveversion pvesh pveum pct qm pveam jq getent apt-get apt-mark dpkg-query; do
+        command -v "$cmd" >/dev/null 2>&1 || die "Не найдена обязательная команда до очистки: $cmd"
     done
 
     pveversion >/dev/null 2>&1 || die "Proxmox VE не обнаружен"
 
+    detect_initial_status
+    detect_bootstrap_fetcher
+
     node_count="$(pvesh get /nodes --output-format json | jq 'length')"
-    [[ "$node_count" == "1" ]]         || die "Полная очистка разрешена только на одиночном PVE. Обнаружено узлов: $node_count"
+    [[ "$node_count" == "1" ]] \
+        || die "Полная очистка разрешена только на одиночном PVE. Обнаружено узлов: $node_count"
 
-    pct config "$KEEP_VMID" >/dev/null 2>&1         && die "VMID $KEEP_VMID занят LXC; ожидалась сохраняемая QEMU VM"
+    pct config "$KEEP_VMID" >/dev/null 2>&1 \
+        && die "VMID $KEEP_VMID занят LXC; ожидалась сохраняемая QEMU VM"
 
-    qm config "$KEEP_VMID" >/dev/null 2>&1         || die "Сохраняемая QEMU VM $KEEP_VMID отсутствует. Очистка остановлена."
+    qm config "$KEEP_VMID" >/dev/null 2>&1 \
+        || die "Сохраняемая QEMU VM $KEEP_VMID отсутствует. Очистка остановлена."
 
     name="$(qm config "$KEEP_VMID" | awk -F ': ' '$1 == "name" {print $2; exit}')"
     ok "VM $KEEP_VMID будет сохранена${name:+ ($name)}"
+    ok "Исходный пакетный состав найден: $INITIAL_STATUS_FILE"
 }
 
 run() {
