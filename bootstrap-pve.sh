@@ -217,6 +217,7 @@ host_preflight() {
     local node
     log "Проверка PVE-хоста"
 
+    [[ -e /dev/kvm ]] || die "Не найден /dev/kvm"
     ip link show "$CT_BRIDGE" >/dev/null 2>&1 || die "Не найден сетевой мост $CT_BRIDGE"
     storage_exists "$TEMPLATE_STORAGE" || die "Не найдено хранилище $TEMPLATE_STORAGE"
     storage_exists "$CT_STORAGE" || die "Не найдено хранилище $CT_STORAGE"
