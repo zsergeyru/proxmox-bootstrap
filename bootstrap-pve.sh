@@ -197,16 +197,16 @@ require_root_and_pve() {
     ok "Proxmox VE обнаружен"
 }
 
-cleanup_host_runtime() {
-    rm -f -- "$LOCK_FILE"
-}
-
 acquire_lock() {
     command -v flock >/dev/null 2>&1 || die "Не найдена команда flock"
     install -d -m 0755 /run/lock
+
+    # Файл блокировки постоянный. Удалять его при EXIT нельзя: другой процесс
+    # может успеть создать новый inode и получить независимую flock, пока
+    # завершающийся процесс всё ещё удерживает блокировку старого inode.
+    # Сама flock освобождается автоматически при закрытии fd 9.
     exec 9>"$LOCK_FILE"
     flock -n 9 || die "Другой bootstrap уже выполняется"
-    trap cleanup_host_runtime EXIT
     ok "Получена блокировка bootstrap"
 }
 
