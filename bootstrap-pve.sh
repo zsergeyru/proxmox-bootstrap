@@ -1055,8 +1055,11 @@ check_ready_state() {
         || die "В 910 нет IPv4 default route"
 
     node=$(hostname -s)
-    ct_exec curl -fsS --connect-timeout 5 --max-time 15 \
-        "https://$node:8006/api2/json/version" >/dev/null \
+    # Здесь проверяется именно TLS и доступность HTTPS. Ответ 401 допустим:
+    # авторизацию PVE API уже проверяет infra-deployer-status выше.
+    ct_exec curl -sS --connect-timeout 5 --max-time 15 \
+        -o /dev/null \
+        "https://$node:8006/api2/json/version" \
         || die "910 не может проверить TLS соединение с PVE API"
 
     ok "910 infra-deployer соответствует bootstrap-контракту"
