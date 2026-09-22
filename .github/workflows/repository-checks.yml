@@ -38,6 +38,7 @@ jobs:
         run: |
           grep -q 'PRIVATE_HOST_ACCESS_PATH="scripts/infra-deployer/pve-bootstrap-access.sh"' bootstrap-pve.sh
           grep -q 'local config="/etc/pve/storage.cfg"' bootstrap-pve.sh
+          grep -q 'pveam download "\$TEMPLATE_STORAGE" "\$template_name" >&2' bootstrap-pve.sh
           if grep -q 'ensure_host_packages' bootstrap-pve.sh; then
             echo "Public bootstrap must not install packages on the PVE host"
             exit 1
