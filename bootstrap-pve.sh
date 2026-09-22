@@ -508,8 +508,9 @@ install_pve_ca() {
 
     ensure_pve_name_resolution_in_ct
     node=$(hostname -s)
-    ct_exec curl -fsS --connect-timeout 5 --max-time 15 \
-        "https://$node:8006/api2/json/version" >/dev/null \
+    ct_exec curl -sS --connect-timeout 5 --max-time 15 \
+        -o /dev/null \
+        "https://$node:8006/api2/json/version" \
         || die "LXC $CTID не может проверить TLS PVE API по имени '$node'"
 
     ok "PVE CA установлен и TLS PVE API проверен"
