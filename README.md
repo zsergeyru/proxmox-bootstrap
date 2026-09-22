@@ -33,13 +33,10 @@ curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/infra-i
 → создать 910
 → запустить 910 и дождаться сети
 → установить минимальные Git/SSH/curl зависимости
-→ передать PVE CA
-→ создать pool managed
-→ создать root@pam!infra-deployer с privsep=1
-→ назначить token только необходимые ACL
-→ передать secret в 910
 → создать/проверить GitHub Deploy Key
 → получить закрытый проект внутри 910
+→ временно запустить из закрытого проекта PVE access helper
+→ helper передаст PVE CA и ограниченный API token в 910
 → запустить scripts/infra-deployer/setup.sh
 → выполнить внутреннюю проверку 910
 ~~~
@@ -69,23 +66,17 @@ features:    nesting=1,keyctl=1
 
 ## PVE API
 
-Отдельный PVE-пользователь не создаётся. Используется API token существующего root@pam:
+Публичный bootstrap не содержит модель PVE-прав.
+
+После получения закрытого репозитория он временно забирает из 910:
 
 ~~~text
-root@pam!infra-deployer
+scripts/infra-deployer/pve-bootstrap-access.sh
 ~~~
 
-Token создаётся с privsep=1. Это не даёт 910 права root: token получает только назначенные ему ACL.
+и выполняет этот доверенный сценарий на PVE от root. Именно закрытый проект определяет token, pool и ACL.
 
-~~~text
-/                                 → PVEAuditor
-/pool/managed                     → PVEVMAdmin
-/storage/local-lvm                → PVEDatastoreUser
-/sdn/zones/localnetwork/vmbr0     → PVESDNUser
-/vms/9000                         → PVETemplateUser
-~~~
-
-Таким образом, изменяющие VM-права находятся только внутри managed; 910 в этот pool не входит.
+После подготовки доступа временная копия сценария на PVE удаляется.
 
 ## GitHub
 
@@ -100,7 +91,7 @@ Allow write access: выключен
 
 ## Повторный запуск
 
-Корректный 910 используется повторно. Закрытая ветка обновляется, а внутренний setup.sh запускается только при новой ревизии проекта.
+Корректный 910 используется повторно. Закрытая ветка обновляется, после чего повторяемый внутренний setup.sh приводит 910 к текущему состоянию.
 
 ~~~bash
 bootstrap-pve.sh --check
@@ -120,6 +111,7 @@ bootstrap-pve.sh --recover
 
 ~~~text
 pvedeploy
+модель PVE-ролей и ACL внутри public bootstrap
 отдельный infra-deployer@pve
 InfraManagedGuest
 двойные ACL user + token
