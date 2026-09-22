@@ -1,249 +1,204 @@
-# Proxmox Bootstrap
+# Proxmox Bootstrap — infra-iac-redesign
 
-Публичный репозиторий содержит минимальную точку входа для первоначального подключения Proxmox VE к приватному инфраструктурному репозиторию и для последующих повторных запусков конфигурации.
+Публичный bootstrap подготавливает только минимальную основу PVE и специальный LXC `910 infra-deployer`.
 
-Текущая версия Public Bootstrap:
+Основная схема:
 
 ```text
-PUBLIC_BOOTSTRAP_VERSION="1.0.0"
+PVE
+→ bootstrap-pve.sh
+→ 910 infra-deployer
+→ дальнейшее управление инфраструктурой из 910
 ```
 
-В проекте два компонента:
+Закрытый репозиторий `zsergeyru/proxmox`, его GitHub Deploy Key, OpenTofu, Ansible и Packer на самом PVE не хранятся.
+
+## Ветка разработки
+
+Новая архитектура пока находится в ветке:
 
 ```text
-Public Bootstrap
+infra-iac-redesign
+```
+
+Для проверки именно этой версии:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/infra-iac-redesign/bootstrap-pve.sh | bash
+```
+
+До переноса в `main` эта команда является тестовой.
+
+## Что делает bootstrap
+
+Обычный первый запуск:
+
+```text
+проверить PVE
+→ получить блокировку
+→ проверить vmbr0, local и local-lvm
+→ сохранить резервную копию критичной конфигурации
+→ получить Debian 13 LXC template
+→ проверить VMID 910
+→ создать 910 infra-deployer
+→ запустить 910
+→ подготовить минимальный Debian
+→ установить доверие к PVE CA
+→ создать ограниченную PVE API identity
+→ передать одноразовый API secret в 910
+→ создать GitHub Deploy Key внутри 910
+→ получить закрытый проект уже из 910
+→ передать управление scripts/infra-deployer/setup.sh
+→ проверить результат
+```
+
+Bootstrap не создаёт остальные VM/LXC.
+
+## Контракт 910
+
+Текущие параметры создания:
+
+```text
+CTID:        910
+hostname:    infra-deployer
+type:        LXC
+OS:          Debian 13
+unprivileged yes
+CPU:         2
+RAM:         2048 MiB
+swap:        512 MiB
+root disk:   32 GiB
+storage:     local-lvm
+bridge:      vmbr0
+onboot:      yes
+protection:  yes
+features:    nesting=1,keyctl=1
+```
+
+Эти значения принадлежат публичному bootstrap, потому что он создаёт `910` ещё до появления доступа к закрытому проекту.
+
+## Сеть
+
+По умолчанию первый запуск использует DHCP:
+
+```bash
 bootstrap-pve.sh
-→ создать или использовать постоянный root-only GitHub Deploy Key
-→ безопасно получить или обновить private repo
-→ выбрать точную Git revision
-→ удерживать общую orchestration lock
-→ поддерживать root trust boundary canonical source
-→ передать параметры запуска
-→ запустить PVE Configuration из этой revision
-
-PVE Configuration
-zsergeyru/proxmox/scripts/pve/setup/configure-pve.sh
-→ привести Proxmox VE к ожидаемому состоянию проекта
 ```
 
-## Основная команда
-
-Войдите в shell Proxmox под `root` и используйте одну и ту же команду при первоначальной установке, последующих запусках и продолжении незавершённого первого запуска:
+Статический адрес можно указать явно:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/main/bootstrap-pve.sh | bash
+bootstrap-pve.sh --ip 192.168.1.90/24 --gateway 192.168.1.1
 ```
 
-Обычный запуск не выполняет полный `apt full-upgrade`.
+Bootstrap намеренно не вычисляет адрес из VMID и не предполагает, что фактическая сеть имеет префикс `/16`.
 
-Для осознанного полного обновления Proxmox VE / Debian:
+## Повторный запуск
+
+Если `910` уже существует, bootstrap сначала проверяет его принадлежность:
+
+```text
+CTID 910
++ hostname infra-deployer
++ tag infra-deployer
++ tag proxmox-bootstrap
+```
+
+Чужой LXC или VM с VMID `910` блокирует запуск.
+
+Корректный существующий `910` повторно используется. Bootstrap не удаляет и не пересоздаёт его автоматически.
+
+Изменение CPU/RAM и других ресурсов существующего `910` не выполняется скрытно: расхождение выводится как предупреждение.
+
+## Проверка без изменений
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/main/bootstrap-pve.sh | bash -s -- --update-system
+bootstrap-pve.sh --check
 ```
 
-Для явного Full Clone smoke-test уже существующего Debian template `9000`:
+Режим не создаёт LXC, не устанавливает пакеты, не скачивает шаблоны и не ротирует credentials.
+
+## Восстановление
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/main/bootstrap-pve.sh | bash -s -- --smoke-test-template
+bootstrap-pve.sh --recover
 ```
 
-Параметр передаётся без изменения в private PVE Configuration. Если template `9000` только что создан текущим configuration run, smoke-test запускается автоматически и отдельный флаг не требуется.
+Это явный режим для восстановления bootstrap-контура.
 
-Smoke-test использует временный VMID `9099`. При успешной проверке VM штатно выключается и удаляется; при ошибке или interruption VM `9099` намеренно сохраняется для диагностики и не удаляется автоматически.
+Он может создать отсутствующий `910` и явно перевыпустить API token. Неизвестный объект с VMID `910` всё равно не удаляется.
 
-## Общая orchestration lock
+## PVE API
 
-Public Bootstrap и private PVE Configuration используют одну lock:
+Используется техническая идентичность:
 
 ```text
-/run/lock/proxmox-orchestration.lock
+infra-deployer@pve!automation
 ```
 
-Bootstrap берёт lock до работы с private checkout и держит её до полного завершения PVE Configuration. Lock передаётся дочернему процессу через открытый файловый дескриптор.
+На текущем этапе bootstrap выдаёт ей только `PVEAuditor` для безопасной проверки API.
 
-Поэтому одновременно не выполняются:
+Права OpenTofu на создание и изменение обычных VM/LXC будут добавлены отдельным контрактом после проверки минимального набора привилегий. Bootstrap намеренно не выдаёт `PVEAdmin` или право менять пользователей/ACL.
+
+## GitHub
+
+GitHub Deploy Key создаётся внутри `910`.
+
+Он даёт только чтение:
 
 ```text
-bootstrap + bootstrap
-bootstrap + configure-pve.sh
-configure-pve.sh + configure-pve.sh
+git@github.com:zsergeyru/proxmox.git
 ```
 
-Это исключает ситуацию, когда canonical checkout переключается на другую revision в середине configuration run.
+Если ключ ещё не добавлен в GitHub, bootstrap выводит public key и ждёт подтверждение пользователя.
 
-## Первый запуск
+На PVE этот private key не хранится.
 
-Если permanent marker отсутствует и canonical runtime ещё не создан:
+## Передача управления закрытому проекту
+
+После получения закрытой ветки внутри `910` bootstrap ожидает точку входа:
 
 ```text
-root + Proxmox check
-→ shared orchestration lock
-→ minimal Git/SSH packages
-→ DNS/HTTPS GitHub check
-→ создать постоянный root-only read-only GitHub Deploy Key
-→ сохранить его в /etc/proxmox-deployer/ssh/
-→ authorization private repo/main этим же ключом
-→ temporary shallow checkout root:root
-→ определить exact HEAD private repo
-→ передать SHA в PVE Configuration
-→ PVE Configuration создаёт/проверяет permanent runtime и canonical checkout той же revision
-→ удалить /var/lib/proxmox-bootstrap
-→ создать /var/lib/proxmox-deployer/state/bootstrap-complete
+scripts/infra-deployer/setup.sh
 ```
 
-Временная область Public Bootstrap теперь содержит только одноразовую копию репозитория:
+Именно она в следующем этапе установит и настроит Semaphore, Runner и инфраструктурные инструменты.
 
-```text
-/var/lib/proxmox-bootstrap/
-└── private-repo/
-```
+Пока эта точка входа не создана в закрытом проекте, новая ветка bootstrap считается незавершённой и не предназначена для запуска на рабочем PVE.
 
-GitHub Deploy Key, `known_hosts` и SSH config с первого запуска находятся сразу в постоянном месте:
+## Что удалено из старой архитектуры
 
-```text
-/etc/proxmox-deployer/ssh/
-├── github_proxmox_repo_ed25519
-├── github_proxmox_repo_ed25519.pub
-├── known_hosts
-└── config
-```
-
-Если Deploy Key ещё не добавлен в GitHub, Public Bootstrap показывает его постоянную public-часть и ждёт подтверждение пользователя через терминал. Write access не включается.
-
-## Продолжение незавершённого первого запуска
-
-Если PVE Configuration была прервана после частичного или полного создания permanent runtime, **не нужно удалять `/etc/proxmox-deployer` или `/var/lib/proxmox-deployer`**.
-
-Та же команда безопасно продолжает работу. Существующие API token secrets и SSH private keys не удаляются и не ротируются автоматически.
-
-Если постоянный GitHub Deploy Key уже существует, Public Bootstrap всегда использует именно его. Второй временный Deploy Key не создаётся.
-
-Если permanent runtime уже содержит `pvedeploy`, canonical Deploy Key, SSH config/known_hosts и canonical checkout, Public Bootstrap использует их как permanent runtime и повторно запускает текущую PVE Configuration.
-
-Если runtime создан только частично, первый запуск продолжается через временный checkout, но с тем же постоянным GitHub credential. Временный checkout считается одноразовым: перед повторным handoff он переводится на свежий `FETCH_HEAD` и очищается через `git clean -ffdx`, включая ignored cache/build artifacts. Permanent checkout такого destructive cleanup не получает.
-
-Для безопасного продолжения незавершённого Public Bootstrap v11 поддерживается одноразовая миграция: если старый ключ остался в `/var/lib/proxmox-bootstrap/`, а постоянного ключа ещё нет, этот же ключ переносится в `/etc/proxmox-deployer/ssh/`. Новый временный ключ при этом не создаётся.
-
-## Root trust boundary canonical source
-
-Canonical repository и Git credential являются частью root-trusted host configuration, а не рабочего пространства `pvedeploy`.
-
-Ожидаемая модель:
-
-```text
-/var/lib/proxmox-deployer
-→ root:pvedeploy 0750
-
-/var/lib/proxmox-deployer/repo
-→ root-owned tree
-→ group/other write запрещён
-
-/etc/proxmox-deployer/ssh/github_proxmox_repo_ed25519
-→ root:root 0600
-
-/etc/proxmox-deployer/ssh/config
-→ root:root 0600
-```
-
-`pvedeploy` может читать project source через parent directory, но не может менять canonical checkout, `.git` metadata или GitHub Deploy Key. Это не мешает будущему `deploy-guest` читать manifests/scripts, но не позволяет ограниченному runtime user подменить код, который позже будет исполнен `root`.
-
-## Повторный запуск после завершённого bootstrap
-
-При наличии:
-
-```text
-/var/lib/proxmox-deployer/state/bootstrap-complete
-```
-
-используется permanent runtime:
+Новый bootstrap больше не использует:
 
 ```text
 pvedeploy
-/etc/proxmox-deployer/ssh/github_proxmox_repo_ed25519
-/etc/proxmox-deployer/ssh/config
-/etc/proxmox-deployer/ssh/known_hosts
+/etc/proxmox-deployer/
+/var/lib/proxmox-deployer/
 /var/lib/proxmox-deployer/repo
+deploy-guest
+sync-management-keys
+PVE Configuration
+PVE_CONFIGURATION_SOURCE_REVISION
+--update-system
+--smoke-test-template
 ```
 
-Перед любым reset Public Bootstrap проверяет:
+## Блокировка
+
+Используется:
 
 ```text
-root trust boundary canonical source
-origin == git@github.com:zsergeyru/proxmox.git
-canonical worktree полностью clean
+/run/lock/proxmox-bootstrap.lock
 ```
 
-Clean означает отсутствие tracked, staged, untracked и ignored drift.
-
-Если локальный drift обнаружен, Bootstrap делает STOP и **не выполняет destructive reset/clean поверх локальных данных**.
-
-Для clean checkout алгоритм:
-
-```text
-проверить root ownership / write boundary
-→ проверить read-only доступ к zsergeyru/proxmox/main
-→ fetch main от root
-→ reset --hard FETCH_HEAD
-→ clean -ffd
-→ повторно подтвердить trust boundary + clean state
-→ определить SHA
-→ запустить PVE Configuration с PVE_CONFIGURATION_SOURCE_REVISION=<SHA>
-```
-
-Private credential не ротируется автоматически. Повреждённый permanent runtime требует явного recovery.
-
-## Одна revision на один configuration run
-
-После выбора private revision Public Bootstrap передаёт:
-
-```text
-PVE_CONFIGURATION_SOURCE_REVISION=<40-char SHA>
-PVE_ORCHESTRATION_LOCK_HELD=1
-```
-
-PVE Configuration до загрузки своих модулей проверяет, что source checkout имеет именно этот HEAD, не содержит local drift и является root-owned/non-writable для `pvedeploy` или других non-root users. Canonical checkout после sync также обязан совпасть с source SHA.
-
-Если `main` изменится между временным checkout и canonical clone/fetch, текущий run остановится вместо смешивания commits.
-
-## Постоянные пути
-
-Canonical private checkout:
-
-```text
-/var/lib/proxmox-deployer/repo
-```
-
-Canonical GitHub Deploy Key:
-
-```text
-/etc/proxmox-deployer/ssh/github_proxmox_repo_ed25519
-```
-
-Каноническая PVE Configuration:
-
-```text
-/var/lib/proxmox-deployer/repo/scripts/pve/setup/configure-pve.sh
-```
-
-Marker успешного первоначального bootstrap:
-
-```text
-/var/lib/proxmox-deployer/state/bootstrap-complete
-```
+Одновременно выполняется только один bootstrap.
 
 ## CI
 
-Public repository checks включают:
+Репозиторий продолжает проверять:
 
 ```text
 bash -n
 ShellCheck
-whitespace check
+git diff --check
 ```
-
-Private repository выполняет дополнительные runtime/template/validator tests.
-
-В публичном репозитории не хранятся внутренняя конфигурация Proxmox, роли, ACL, API tokens, планы VM/LXC, template implementation, конфигурация AI или другие детали приватной инфраструктуры.
-
-Secrets, private keys, passwords и рабочие credentials в Git не сохраняются.
