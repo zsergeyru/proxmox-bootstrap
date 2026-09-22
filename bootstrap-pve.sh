@@ -41,6 +41,7 @@ CT_COMPLETE_MARKER="/var/lib/infra-deployer/bootstrap-complete"
 MODE="apply"
 CT_IP="dhcp"
 CT_GATEWAY=""
+HOST_BACKUP_DONE=0
 
 C_RESET=""
 C_BOLD=""
@@ -192,6 +193,7 @@ ensure_host_packages() {
 
     [[ "$MODE" != "check" ]] || die "Для проверки не хватает пакетов:$missing"
 
+    backup_host_config
     log "Установка минимальных пакетов PVE"
     apt-get update
     # shellcheck disable=SC2086
@@ -240,6 +242,11 @@ host_preflight() {
 
 backup_host_config() {
     local ts dir path
+
+    if ((HOST_BACKUP_DONE == 1)); then
+        return
+    fi
+
     ts=$(date +%Y%m%d-%H%M%S)
     dir="$BACKUP_ROOT/$ts"
     install -d -o root -g root -m 0700 "$dir"
@@ -258,6 +265,7 @@ backup_host_config() {
         cp -a --parents "$path" "$dir/"
     done
 
+    HOST_BACKUP_DONE=1
     ok "Сохранена резервная копия конфигурации PVE: $dir"
 }
 
