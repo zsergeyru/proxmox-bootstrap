@@ -139,7 +139,7 @@ require_pve_root() {
     if [[ -n "$INITIAL_STATUS_FILE" ]]; then
         ok "Исходный пакетный состав найден: $INITIAL_STATUS_FILE"
     else
-        warn "Точного снимка пакетов ISO нет; используем APT history и подтверждённые отличия первого запуска свежего PVE (git, jq)."
+        warn "Точного снимка пакетов ISO нет; используем APT history и подтверждённые отличия первых запусков свежего PVE (git, jq, htop, mc, tmux)."
     fi
 }
 
@@ -554,6 +554,9 @@ known_nonstock_packages() {
     cat <<'EOF_KNOWN'
 git
 jq
+htop
+mc
+tmux
 EOF_KNOWN
 }
 
@@ -567,8 +570,9 @@ manual_extra_packages() {
             project_apt_installed_packages
         fi
 
-        # Подтверждено первым запуском на свежем PVE 9.2.18:
-        # git и jq тогда устанавливались как NEW.
+        # Подтверждено первыми запусками на свежем PVE 9.2.18:
+        # git и jq устанавливались как NEW на Stage 0;
+        # htop, mc и tmux — как NEW на следующем обязательном apt install.
         known_nonstock_packages
     } | sort -u
 }
@@ -717,7 +721,7 @@ show_preserved_state() {
 - сохранённый enterprise repository восстанавливается из *.disabled;
 - точный Ceph no-subscription шаблон возвращается к enterprise;
 - при наличии снимка удаляются вручную добавленные после установки пакеты;
-- без снимка используются записи Install: из /var/log/apt/history.log* и подтверждённые NEW-пакеты первого запуска свежего PVE: git и jq;
+- без снимка используются записи Install: из /var/log/apt/history.log* и подтверждённые NEW-пакеты первых запусков свежего PVE: git, jq, htop, mc и tmux;
 - любое удаление сначала проверяется APT-симуляцией на сохранность PVE.
 EOF_KEEP
 }
