@@ -1,64 +1,54 @@
 # Proxmox Bootstrap — infra-iac-redesign
 
-Публичный bootstrap подготавливает только минимальную основу PVE и специальный LXC `910 infra-deployer`.
+Публичный bootstrap нужен только для запуска постоянного разворачивателя 910 infra-deployer на чистом Proxmox VE.
 
-Основная схема:
-
-```text
-PVE
+~~~text
+чистый PVE
 → bootstrap-pve.sh
-→ 910 infra-deployer
-→ дальнейшее управление инфраструктурой из 910
-```
+→ создать/запустить 910
+→ выдать 910 ограниченный PVE API token
+→ создать GitHub Deploy Key внутри 910
+→ получить закрытый проект
+→ передать управление setup.sh внутри 910
+~~~
 
-Закрытый репозиторий `zsergeyru/proxmox`, его GitHub Deploy Key, OpenTofu, Ansible и Packer на самом PVE не хранятся.
+После передачи управления публичный bootstrap не знает внутреннего устройства 910. Docker, Semaphore, OpenTofu, Ansible и Packer настраиваются закрытым проектом внутри контейнера.
 
-## Ветка разработки
+## Запуск
 
-Новая архитектура пока находится в ветке:
+До переноса новой архитектуры в main используется ветка:
 
-```text
-infra-iac-redesign
-```
-
-Для проверки именно этой версии:
-
-```bash
+~~~bash
 curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/infra-iac-redesign/bootstrap-pve.sh | bash
-```
+~~~
 
-До переноса в `main` эта команда является тестовой.
+Единственное обязательное ручное действие при первом запуске — добавить показанный public Deploy Key в GitHub как read-only ключ репозитория zsergeyru/proxmox. После этого bootstrap продолжает работу автоматически.
 
 ## Что делает bootstrap
 
-Обычный первый запуск:
-
-```text
-проверить PVE
-→ получить блокировку
-→ проверить vmbr0, local и local-lvm
-→ сохранить резервную копию критичной конфигурации
-→ получить Debian 13 LXC template
+~~~text
+проверить root и минимальную основу PVE
 → проверить VMID 910
-→ создать 910 infra-deployer
-→ запустить 910
-→ подготовить минимальный Debian
-→ установить доверие к PVE CA
-→ создать ограниченную PVE API identity
-→ передать одноразовый API secret в 910
-→ создать GitHub Deploy Key внутри 910
-→ получить закрытый проект уже из 910
-→ передать управление scripts/infra-deployer/setup.sh
-→ проверить результат
-```
+→ при необходимости скачать Debian 13 LXC template
+→ создать 910
+→ запустить 910 и дождаться сети
+→ установить минимальные Git/SSH/curl зависимости
+→ передать PVE CA
+→ создать pool managed
+→ создать root@pam!infra-deployer с privsep=1
+→ назначить token только необходимые ACL
+→ передать secret в 910
+→ создать/проверить GitHub Deploy Key
+→ получить закрытый проект внутри 910
+→ запустить scripts/infra-deployer/setup.sh
+→ выполнить внутреннюю проверку 910
+~~~
 
-Bootstrap не создаёт остальные VM/LXC.
+Bootstrap не настраивает Semaphore, OpenTofu, Ansible или Packer сам.
 
 ## Контракт 910
 
-Текущие параметры создания:
-
-```text
+~~~text
 CTID:        910
 hostname:    infra-deployer
 type:        LXC
@@ -73,146 +63,73 @@ bridge:      vmbr0
 onboot:      yes
 protection:  yes
 features:    nesting=1,keyctl=1
-```
+~~~
 
-Эти значения принадлежат публичному bootstrap, потому что он создаёт `910` ещё до появления доступа к закрытому проекту.
-
-## Сеть
-
-По умолчанию первый запуск использует DHCP:
-
-```bash
-bootstrap-pve.sh
-```
-
-Статический адрес можно указать явно:
-
-```bash
-bootstrap-pve.sh --ip 192.168.1.90/24 --gateway 192.168.1.1
-```
-
-Bootstrap намеренно не вычисляет адрес из VMID и не предполагает, что фактическая сеть имеет префикс `/16`.
-
-## Повторный запуск
-
-Если `910` уже существует, bootstrap сначала проверяет его принадлежность:
-
-```text
-CTID 910
-+ hostname infra-deployer
-+ tag infra-deployer
-+ tag proxmox-bootstrap
-```
-
-Чужой LXC или VM с VMID `910` блокирует запуск.
-
-Корректный существующий `910` повторно используется. Bootstrap не удаляет и не пересоздаёт его автоматически.
-
-Изменение CPU/RAM и других ресурсов существующего `910` не выполняется скрытно: расхождение выводится как предупреждение.
-
-## Проверка без изменений
-
-```bash
-bootstrap-pve.sh --check
-```
-
-Режим не создаёт LXC, не устанавливает пакеты, не скачивает шаблоны и не ротирует credentials.
-
-## Восстановление
-
-```bash
-bootstrap-pve.sh --recover
-```
-
-Это явный режим для восстановления bootstrap-контура.
-
-Он может создать отсутствующий `910` и явно перевыпустить API token. Неизвестный объект с VMID `910` всё равно не удаляется.
+Чужой LXC или VM с VMID 910 автоматически не заменяется.
 
 ## PVE API
 
-Используется техническая идентичность:
+Отдельный PVE-пользователь не создаётся. Используется API token существующего root@pam:
 
-```text
-infra-deployer@pve!automation
-```
+~~~text
+root@pam!infra-deployer
+~~~
 
-Токен использует `privsep=1`. Пользователь и токен получают одинаковые прямые ACL:
+Token создаётся с privsep=1. Это не даёт 910 права root: token получает только назначенные ему ACL.
 
-```text
+~~~text
 /                                 → PVEAuditor
-/pool/managed                     → InfraManagedGuest
-/vms/9000                         → PVETemplateUser
+/pool/managed                     → PVEVMAdmin
 /storage/local-lvm                → PVEDatastoreUser
 /sdn/zones/localnetwork/vmbr0     → PVESDNUser
-```
+/vms/9000                         → PVETemplateUser
+~~~
 
-`InfraManagedGuest` — единственная собственная роль. Она даёт жизненный цикл обычных VM/LXC только внутри `managed`.
-
-Bootstrap не выдаёт `PVEAdmin`, `Pool.Allocate`, `Permissions.Modify`, `Sys.Modify`, консольные, backup или snapshot-права.
-
-Отдельно проверяется, что на `/vms/910` у token отсутствуют любые изменяющие VM privileges.
+Таким образом, изменяющие VM-права находятся только внутри managed; 910 в этот pool не входит.
 
 ## GitHub
 
-GitHub Deploy Key создаётся внутри `910`.
+Deploy Key создаётся и хранится внутри 910. На PVE private key не хранится.
 
-Он даёт только чтение:
+Если ключ ещё не зарегистрирован, bootstrap показывает public key и ждёт Enter после его добавления в:
 
-```text
-git@github.com:zsergeyru/proxmox.git
-```
+~~~text
+GitHub → zsergeyru/proxmox → Settings → Deploy keys
+Allow write access: выключен
+~~~
 
-Если ключ ещё не добавлен в GitHub, bootstrap выводит public key и ждёт подтверждение пользователя.
+## Повторный запуск
 
-На PVE этот private key не хранится.
+Корректный 910 используется повторно. Закрытая ветка обновляется, а внутренний setup.sh запускается только при новой ревизии проекта.
 
-## Передача управления закрытому проекту
+~~~bash
+bootstrap-pve.sh --check
+~~~
 
-После получения закрытой ветки внутри `910` bootstrap запускает:
+только проверяет готовое состояние.
 
-```text
-scripts/infra-deployer/setup.sh
-```
+~~~bash
+bootstrap-pve.sh --recover
+~~~
 
-Эта точка входа уже реализована в приватной ветке `infra-iac-redesign`. Она устанавливает Docker Engine, Semaphore Server/Runner, настраивает проект `Proxmox Infrastructure`, Key Store, Git repository и команду `infra-deployer-status`.
+разрешает перевыпустить потерянный PVE API token при восстановлении 910.
 
-Bootstrap считает `910` готовым только после успешного выполнения этой внутренней проверки.
+## Что больше не используется
 
-Код прошёл статические CI-проверки, но полный цикл ещё должен быть проверен на реальном PVE перед переносом ветки в `main`.
+Публичному bootstrap не нужны:
 
-## Что удалено из старой архитектуры
-
-Новый bootstrap больше не использует:
-
-```text
+~~~text
 pvedeploy
-/etc/proxmox-deployer/
-/var/lib/proxmox-deployer/
-/var/lib/proxmox-deployer/repo
+отдельный infra-deployer@pve
+InfraManagedGuest
+двойные ACL user + token
+PVE Configuration
 deploy-guest
 sync-management-keys
-PVE Configuration
-PVE_CONFIGURATION_SOURCE_REVISION
---update-system
---smoke-test-template
-```
-
-## Блокировка
-
-Используется:
-
-```text
-/run/lock/proxmox-bootstrap.lock
-```
-
-Одновременно выполняется только один bootstrap.
+постоянная закрытая Git-копия на PVE
+знание о Semaphore/OpenTofu/Ansible/Packer
+~~~
 
 ## CI
 
-Репозиторий продолжает проверять:
-
-```text
-bash -n
-ShellCheck
-git diff --check
-```
+Проверяются синтаксис shell, ShellCheck и пробельные ошибки.
