@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# Минимальный public bootstrap для Proxmox VE.
-# Его задача: создать/запустить 910, выдать ему ограниченный PVE API token,
-# дать read-only доступ к закрытому Git и передать управление setup.sh.
-# Docker, Semaphore, OpenTofu, Ansible и Packer настраиваются уже внутри 910.
+# Минимальный публичный bootstrap для Proxmox VE.
+# На PVE он только создаёт/запускает LXC 910, запускает гостевой bootstrap
+# внутри 910 и один раз выполняет подготовленный закрытым проектом PVE helper.
 
-PUBLIC_BOOTSTRAP_VERSION="3.0.0-dev2"
+PUBLIC_BOOTSTRAP_VERSION="3.1.0-dev1"
 
 CTID=910
 CT_HOSTNAME="infra-deployer"
@@ -18,21 +17,16 @@ CT_STORAGE="local-lvm"
 CT_BRIDGE="vmbr0"
 TEMPLATE_STORAGE="local"
 
-PRIVATE_REPO="git@github.com:zsergeyru/proxmox.git"
-PRIVATE_BRANCH="infra-iac-redesign"
-PRIVATE_SETUP_PATH="scripts/infra-deployer/setup.sh"
-PRIVATE_HOST_ACCESS_PATH="scripts/infra-deployer/pve-bootstrap-access.sh"
+PROJECT_BRANCH="infra-iac-redesign"
+
+GUEST_BOOTSTRAP_REF="a494c6a4baa43fa596ad2773ca5e198cff4c742c"
+GUEST_BOOTSTRAP_URL="https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/${GUEST_BOOTSTRAP_REF}/bootstrap-910.sh"
+CT_BOOTSTRAP_DIR="/root/.infra-deployer-bootstrap"
+CT_GUEST_BOOTSTRAP="${CT_BOOTSTRAP_DIR}/bootstrap-910.sh"
+CT_HOST_HELPER="${CT_BOOTSTRAP_DIR}/pve-host-helper.sh"
 
 LOCK_FILE="/run/lock/proxmox-bootstrap.lock"
-HOST_TMP_DIR="/run/proxmox-bootstrap"
-
-CT_BOOTSTRAP_DIR="/root/.infra-deployer-bootstrap"
-CT_SECRET_FILE="$CT_BOOTSTRAP_DIR/pve-api.env"
-CT_GITHUB_KEY="/root/.ssh/github_proxmox_repo_ed25519"
-CT_GITHUB_PUB="$CT_GITHUB_KEY.pub"
-CT_GITHUB_KNOWN_HOSTS="/root/.ssh/github_known_hosts"
-CT_GITHUB_SSH_CONFIG="/root/.ssh/github_config"
-CT_PROJECT_DIR="/var/lib/infra-deployer/bootstrap-repo"
+HOST_TMP_FILE=""
 
 MODE="apply"
 CT_IP="dhcp"
@@ -68,9 +62,9 @@ usage() {
   bootstrap-pve.sh [параметры]
 
 Режимы:
-  без параметра режима     создать или проверить 910 infra-deployer
-  --check                  только проверить, ничего не менять
-  --recover                явное восстановление/ротация bootstrap credentials
+  без параметра режима     создать или подготовить 910 infra-deployer
+  --check                  только проверить готовность существующего 910
+  --recover                восстановить/ротировать bootstrap credentials
 
 Сеть 910:
   по умолчанию             DHCP
@@ -130,7 +124,7 @@ parse_args() {
             --project-branch)
                 shift
                 (($#)) || die "После --project-branch требуется имя ветки"
-                PRIVATE_BRANCH=$1
+                PROJECT_BRANCH=$1
                 ;;
             -h|--help)
                 usage
@@ -151,16 +145,15 @@ parse_args() {
         validate_ipv4 "$CT_GATEWAY" || die "Некорректный IPv4 gateway: $CT_GATEWAY"
     fi
 
-    [[ "$PRIVATE_BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]] \
-        || die "Некорректное имя ветки проекта: $PRIVATE_BRANCH"
+    [[ "$PROJECT_BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]]         || die "Некорректное имя ветки проекта: $PROJECT_BRANCH"
 }
 
 require_root_and_pve() {
     local cmd
     [[ $EUID -eq 0 ]] || die "Запустите скрипт от root на PVE"
 
-    for cmd in pveversion pvesh pct qm pveam pvesm; do
-        command -v "$cmd" >/dev/null 2>&1 || die "Не найдена обязательная команда PVE: $cmd"
+    for cmd in pveversion pvesh pct qm pveam pvesm curl bash; do
+        command -v "$cmd" >/dev/null 2>&1 || die "Не найдена обязательная штатная команда: $cmd"
     done
 
     pveversion >/dev/null || die "Не удалось получить версию Proxmox VE"
@@ -168,7 +161,7 @@ require_root_and_pve() {
 }
 
 cleanup_host_runtime() {
-    rm -rf -- "$HOST_TMP_DIR"
+    [[ -z "$HOST_TMP_FILE" ]] || rm -f -- "$HOST_TMP_FILE"
     rm -f -- "$LOCK_FILE"
 }
 
@@ -216,39 +209,23 @@ storage_has_content() {
 }
 
 host_preflight() {
-    local node
     log "Проверка минимальной основы PVE"
 
     ip link show "$CT_BRIDGE" >/dev/null 2>&1 || die "Не найден сетевой мост $CT_BRIDGE"
     storage_exists "$TEMPLATE_STORAGE" || die "Не найдено хранилище $TEMPLATE_STORAGE"
     storage_exists "$CT_STORAGE" || die "Не найдено хранилище $CT_STORAGE"
-    storage_has_content "$TEMPLATE_STORAGE" "vztmpl" \
-        || die "Хранилище $TEMPLATE_STORAGE не разрешает LXC templates"
-    storage_has_content "$CT_STORAGE" "rootdir" \
-        || die "Хранилище $CT_STORAGE не разрешает LXC rootdir"
-
-    node=$(hostname -s)
-    [[ -n "$node" ]] || die "Не удалось определить имя PVE-узла"
-    getent ahostsv4 "$node" >/dev/null 2>&1 \
-        || die "Имя PVE-узла '$node' не разрешается в IPv4"
+    storage_has_content "$TEMPLATE_STORAGE" "vztmpl"         || die "Хранилище $TEMPLATE_STORAGE не разрешает LXC templates"
+    storage_has_content "$CT_STORAGE" "rootdir"         || die "Хранилище $CT_STORAGE не разрешает LXC rootdir"
 
     ok "Минимальная основа PVE готова"
 }
 
-
-
 find_local_debian13_template() {
-    pveam list "$TEMPLATE_STORAGE" 2>/dev/null \
-        | awk '$1 ~ /vztmpl\/debian-13-standard_/ {print $1}' \
-        | sort -V \
-        | tail -n1
+    pveam list "$TEMPLATE_STORAGE" 2>/dev/null         | awk '$1 ~ /vztmpl\/debian-13-standard_/ {print $1}'         | sort -V         | tail -n1
 }
 
 latest_debian13_template_name() {
-    pveam available --section system 2>/dev/null \
-        | awk '$2 ~ /^debian-13-standard_.*_amd64\.tar\.(zst|gz)$/ {print $2}' \
-        | sort -V \
-        | tail -n1
+    pveam available --section system 2>/dev/null         | awk '$2 ~ /^debian-13-standard_.*_amd64\.tar\.(zst|gz)$/ {print $2}'         | sort -V         | tail -n1
 }
 
 ensure_debian13_template() {
@@ -285,9 +262,7 @@ vm_exists() {
 
 ct_config_value() {
     local key=$1
-    pct config "$CTID" 2>/dev/null \
-        | sed -n "s/^$key:[[:space:]]*//p" \
-        | head -n1
+    pct config "$CTID" 2>/dev/null         | sed -n "s/^$key:[[:space:]]*//p"         | head -n1
 }
 
 has_tag() {
@@ -302,22 +277,18 @@ assert_owned_ct() {
     ct_exists || return 1
 
     hostname=$(ct_config_value hostname)
-    [[ "$hostname" == "$CT_HOSTNAME" ]] \
-        || die "CTID $CTID занят LXC '$hostname', а ожидается '$CT_HOSTNAME'"
+    [[ "$hostname" == "$CT_HOSTNAME" ]]         || die "CTID $CTID занят LXC '$hostname', а ожидается '$CT_HOSTNAME'"
 
     tags=$(ct_config_value tags)
     has_tag "$tags" "infra-deployer" || die "LXC $CTID не имеет tag infra-deployer"
     has_tag "$tags" "proxmox-bootstrap" || die "LXC $CTID не имеет tag proxmox-bootstrap"
 }
 
-
-
 build_net0() {
     if [[ "$CT_IP" == "dhcp" ]]; then
         printf 'name=eth0,bridge=%s,ip=dhcp,type=veth\n' "$CT_BRIDGE"
     else
-        printf 'name=eth0,bridge=%s,ip=%s,gw=%s,type=veth\n' \
-            "$CT_BRIDGE" "$CT_IP" "$CT_GATEWAY"
+        printf 'name=eth0,bridge=%s,ip=%s,gw=%s,type=veth\n'             "$CT_BRIDGE" "$CT_IP" "$CT_GATEWAY"
     fi
 }
 
@@ -327,20 +298,7 @@ create_infra_deployer() {
 
     log "Создание LXC $CTID $CT_HOSTNAME"
 
-    pct create "$CTID" "$template_ref" \
-        --hostname "$CT_HOSTNAME" \
-        --ostype debian \
-        --unprivileged 1 \
-        --cores "$CT_CORES" \
-        --memory "$CT_MEMORY_MB" \
-        --swap "$CT_SWAP_MB" \
-        --rootfs "$CT_STORAGE:$CT_DISK_GB" \
-        --net0 "$net0" \
-        --features "nesting=1,keyctl=1" \
-        --onboot 1 \
-        --protection 1 \
-        --tags "infra-deployer;proxmox-bootstrap" \
-        --description "managed-by=proxmox-bootstrap role=infra-deployer"
+    pct create "$CTID" "$template_ref"         --hostname "$CT_HOSTNAME"         --ostype debian         --unprivileged 1         --cores "$CT_CORES"         --memory "$CT_MEMORY_MB"         --swap "$CT_SWAP_MB"         --rootfs "$CT_STORAGE:$CT_DISK_GB"         --net0 "$net0"         --features "nesting=1,keyctl=1"         --onboot 1         --protection 1         --tags "infra-deployer;proxmox-bootstrap"         --description "managed-by=proxmox-bootstrap role=infra-deployer"
 
     assert_owned_ct || die "Созданный LXC $CTID не прошёл ownership-проверку"
     ok "LXC $CTID создан"
@@ -378,167 +336,71 @@ wait_ct_network() {
     die "LXC $CTID запущен, но сеть или DNS не готовы"
 }
 
-bootstrap_ct_os() {
+install_guest_bootstrap() {
     [[ "$MODE" != "check" ]] || return 0
 
-    log "Минимальная подготовка Debian внутри LXC $CTID"
-    ct_exec env DEBIAN_FRONTEND=noninteractive apt-get update
-    ct_exec env DEBIAN_FRONTEND=noninteractive \
-        apt-get install -y --no-install-recommends \
-        ca-certificates curl git jq openssh-client
+    log "Передача стартового сценария внутрь LXC $CTID"
 
-    ok "Минимальная Debian-основа внутри LXC готова"
+    HOST_TMP_FILE=$(mktemp /run/proxmox-bootstrap-910.XXXXXX)
+    curl -fsSL --connect-timeout 10 --max-time 30         "$GUEST_BOOTSTRAP_URL" -o "$HOST_TMP_FILE"
+
+    ct_exec install -d -m 0700 "$CT_BOOTSTRAP_DIR"
+    pct push "$CTID" "$HOST_TMP_FILE" "$CT_GUEST_BOOTSTRAP"         --user 0 --group 0 --perms 0700
+
+    rm -f -- "$HOST_TMP_FILE"
+    HOST_TMP_FILE=""
+
+    ok "Стартовый сценарий передан в 910"
 }
 
-
-
-ensure_github_key() {
-    [[ "$MODE" != "check" ]] || return 0
-
-    ct_exec install -d -m 0700 /root/.ssh
-
-    if ct_exec test -f "$CT_GITHUB_KEY"; then
-        ok "GitHub Deploy Key внутри 910 уже существует"
-    else
-        ct_exec test ! -e "$CT_GITHUB_PUB" || die "В 910 есть public GitHub key без private key"
-        ct_exec ssh-keygen -q -t ed25519 -N '' \
-            -C infra-deployer-readonly-zsergeyru-proxmox \
-            -f "$CT_GITHUB_KEY"
-        ok "GitHub Deploy Key создан внутри 910"
-    fi
-
-    ct_exec sh -c \
-        "curl -fsSL --connect-timeout 10 --max-time 20 https://api.github.com/meta | jq -r '.ssh_keys[] | \"github.com \" + .' > '$CT_GITHUB_KNOWN_HOSTS'"
-
-    ct_exec sh -c "cat > '$CT_GITHUB_SSH_CONFIG' <<EOF_SSH
-Host github.com
-    HostName github.com
-    User git
-    IdentityFile $CT_GITHUB_KEY
-    IdentitiesOnly yes
-    UserKnownHostsFile $CT_GITHUB_KNOWN_HOSTS
-    StrictHostKeyChecking yes
-    BatchMode yes
-    ConnectTimeout 10
-EOF_SSH
-chmod 0600 '$CT_GITHUB_KEY' '$CT_GITHUB_SSH_CONFIG'
-chmod 0644 '$CT_GITHUB_PUB' '$CT_GITHUB_KNOWN_HOSTS'"
+run_guest_prepare_once() {
+    ct_exec "$CT_GUEST_BOOTSTRAP" prepare --project-branch "$PROJECT_BRANCH"
 }
 
-private_branch_accessible() {
-    ct_exec env GIT_SSH_COMMAND="ssh -F $CT_GITHUB_SSH_CONFIG" \
-        git ls-remote "$PRIVATE_REPO" "refs/heads/$PRIVATE_BRANCH" 2>/dev/null \
-        | grep -q .
-}
+run_guest_prepare() {
+    local rc
 
-show_github_key() {
-    printf '\n%sДобавьте этот ключ в GitHub как read-only Deploy Key репозитория zsergeyru/proxmox:%s\n\n' \
-        "$C_BOLD" "$C_RESET"
-    ct_exec cat "$CT_GITHUB_PUB"
-    printf '\nGitHub -> zsergeyru/proxmox -> Settings -> Deploy keys -> Add deploy key\n'
-    printf 'Allow write access: ВЫКЛЮЧЕН\n\n'
-}
+    set +e
+    run_guest_prepare_once
+    rc=$?
+    set -e
 
-ensure_private_repo_access() {
-    if private_branch_accessible; then
-        ok "910 имеет read-only доступ к закрытому проекту"
+    if ((rc == 0)); then
         return
     fi
 
-    show_github_key
+    ((rc == 42)) || return "$rc"
 
-    [[ -r /dev/tty ]] \
-        || die "GitHub Deploy Key ещё не зарегистрирован. Добавьте показанный key и повторите bootstrap."
+    [[ -r /dev/tty ]]         || die "GitHub Deploy Key ещё не зарегистрирован. Добавьте показанный ключ и повторите bootstrap."
 
     printf 'Нажмите Enter после добавления Deploy Key в GitHub...' >/dev/tty
     IFS= read -r _ </dev/tty || die "Не удалось прочитать подтверждение"
     printf '\n' >/dev/tty
 
-    private_branch_accessible || die "Доступ к $PRIVATE_REPO/$PRIVATE_BRANCH по-прежнему отсутствует"
-    ok "Read-only доступ к закрытому проекту подтверждён"
-}
-
-checkout_private_project() {
-    local origin
-    [[ "$MODE" != "check" ]] || return 0
-
-    log "Получение закрытого проекта внутри 910"
-
-    if ct_exec test -d "$CT_PROJECT_DIR/.git"; then
-        origin=$(ct_exec git -C "$CT_PROJECT_DIR" remote get-url origin)
-        [[ "$origin" == "$PRIVATE_REPO" ]] \
-            || die "Bootstrap checkout внутри 910 имеет неожиданный origin: $origin"
-
-        ct_exec env GIT_SSH_COMMAND="ssh -F $CT_GITHUB_SSH_CONFIG" \
-            git -C "$CT_PROJECT_DIR" fetch --depth 1 origin "$PRIVATE_BRANCH"
-        ct_exec git -C "$CT_PROJECT_DIR" reset --hard FETCH_HEAD
-        ct_exec git -C "$CT_PROJECT_DIR" clean -ffdx
-    else
-        ct_exec rm -rf "$CT_PROJECT_DIR"
-        ct_exec install -d -m 0755 /var/lib/infra-deployer
-        ct_exec env GIT_SSH_COMMAND="ssh -F $CT_GITHUB_SSH_CONFIG" \
-            git clone --depth 1 --branch "$PRIVATE_BRANCH" "$PRIVATE_REPO" "$CT_PROJECT_DIR"
-    fi
-
-    ok "Закрытый проект получен внутри 910"
+    run_guest_prepare_once
 }
 
 run_host_access() {
-    local source host_script
+    ct_exec test -s "$CT_HOST_HELPER"         || die "910 не подготовил одноразовый PVE helper"
 
-    source="$CT_PROJECT_DIR/$PRIVATE_HOST_ACCESS_PATH"
-    host_script="$HOST_TMP_DIR/pve-bootstrap-access.sh"
+    log "Одноразовая выдача 910 ограниченного доступа к PVE"
 
-    ct_exec test -f "$source" \
-        || die "В закрытом проекте отсутствует $PRIVATE_HOST_ACCESS_PATH"
+    ct_exec cat "$CT_HOST_HELPER"         | INFRA_DEPLOYER_CTID="$CTID"           INFRA_DEPLOYER_MODE="$MODE"           bash
 
-    install -d -o root -g root -m 0700 "$HOST_TMP_DIR"
-    rm -f "$host_script"
-    pct pull "$CTID" "$source" "$host_script"
-    chmod 0600 "$host_script"
-
-    INFRA_DEPLOYER_CTID="$CTID" \
-    INFRA_DEPLOYER_MODE="$MODE" \
-    INFRA_DEPLOYER_SECRET_FILE="$CT_SECRET_FILE" \
-        bash "$host_script"
-
-    rm -f "$host_script"
+    ok "Ограниченный доступ 910 к PVE подготовлен"
 }
 
-run_private_setup() {
-    local setup recover_flag=0
+run_guest_finish() {
+    local args=(finish --project-branch "$PROJECT_BRANCH")
 
-    setup="$CT_PROJECT_DIR/$PRIVATE_SETUP_PATH"
-    ct_exec test -f "$setup" \
-        || die "В ветке $PRIVATE_BRANCH отсутствует $PRIVATE_SETUP_PATH"
+    [[ "$MODE" == "recover" ]] && args+=(--recover)
 
-    [[ "$MODE" == "recover" ]] && recover_flag=1
-
-    log "Настройка infra-deployer из закрытого проекта"
-    ct_exec env \
-        INFRA_DEPLOYER_BOOTSTRAP=1 \
-        INFRA_DEPLOYER_RECOVER="$recover_flag" \
-        INFRA_PROJECT_BRANCH="$PRIVATE_BRANCH" \
-        PVE_API_SECRET_FILE="$CT_SECRET_FILE" \
-        bash "$setup"
-
-    ct_exec rm -f "$CT_SECRET_FILE"
-    ok "Внутренняя настройка 910 завершена"
+    ct_exec "$CT_GUEST_BOOTSTRAP" "${args[@]}"
 }
 
-check_ready_state() {
-    local status
-
-    assert_owned_ct || die "LXC $CTID отсутствует"
-    status=$(pct status "$CTID" | awk '{print $2}')
-    [[ "$status" == "running" ]] || die "LXC $CTID не запущен"
-
-    ct_exec test -x /usr/local/sbin/infra-deployer-status \
-        || die "В 910 отсутствует infra-deployer-status"
-    ct_exec /usr/local/sbin/infra-deployer-status >/dev/null \
-        || die "Внутренняя проверка 910 завершилась ошибкой"
-
-    ok "910 infra-deployer готов"
+run_guest_check() {
+    ct_exec test -x "$CT_GUEST_BOOTSTRAP"         || die "В 910 отсутствует гостевой bootstrap"
+    ct_exec "$CT_GUEST_BOOTSTRAP" check
 }
 
 main() {
@@ -562,21 +424,17 @@ main() {
     wait_ct_network
 
     if [[ "$MODE" == "check" ]]; then
-        check_ready_state
+        run_guest_check
         exit 0
     fi
 
-    bootstrap_ct_os
-    ensure_github_key
-    ensure_private_repo_access
-    checkout_private_project
-
+    install_guest_bootstrap
+    run_guest_prepare
     run_host_access
-    run_private_setup
-    check_ready_state
+    run_guest_finish
+    run_guest_check
 
-    printf '\n%s%sPUBLIC BOOTSTRAP УСПЕШНО ЗАВЕРШЁН%s\n' \
-        "$C_BOLD" "$C_GREEN" "$C_RESET"
+    printf '\n%s%sPUBLIC BOOTSTRAP УСПЕШНО ЗАВЕРШЁН%s\n'         "$C_BOLD" "$C_GREEN" "$C_RESET"
     printf 'Единственная ручная операция — добавление GitHub Deploy Key при первом запуске.\n'
 }
 
