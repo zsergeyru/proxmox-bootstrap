@@ -56,17 +56,21 @@ usage() {
   - явные ACL и API tokens;
   - дополнительные PVE users/groups;
   - известные проектные роли;
-  - pool managed, если после очистки он пуст;
+  - все пустые PVE pools;
   - старого pvedeploy и проектные файлы;
   - старые project backups;
-  - Debian 13 LXC template/cache, чтобы bootstrap скачал его заново.
+  - Debian 13 LXC template/cache, чтобы bootstrap скачал его заново;
+  - вручную установленные после исходной установки пакеты, если их удаление не ломает PVE;
+  - изменения APT repositories, внесённые старой схемой;
+  - добавленный старой схемой content type snippets в storage local.
 
-Не изменяются:
+Сохраняются:
   - VM 100;
   - сеть PVE;
-  - local/local-lvm и storage.cfg;
-  - APT repositories;
-  - установленные системные пакеты.
+  - сами storage local/local-lvm;
+  - исходный пакетный состав установщика PVE;
+  - пакеты, которые текущий PVE не позволяет безопасно удалить;
+  - сам Proxmox VE.
 USAGE
 }
 
