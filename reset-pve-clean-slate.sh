@@ -170,62 +170,6 @@ remove_other_guests() {
     done < <(guest_rows)
 }
 
-pve_user_exists() {
-    local userid=$1
-    pveum user list --output-format json 2>/dev/null         | jq -e --arg userid "$userid" '.[] | select(.userid == $userid)' >/dev/null
-}
-
-pve_token_exists() {
-    local userid=$1 token=$2
-    pveum user token list "$userid" --output-format json 2>/dev/null         | jq -e --arg token "$token" '.[] | select(.tokenid == $token)' >/dev/null
-}
-
-remove_principal_acls() {
-    local kind=$1 principal=$2 option path role
-    local acl_json
-
-    acl_json="$(pveum acl list --output-format json)"
-
-    case "$kind" in
-        user) option="--users" ;;
-        token) option="--tokens" ;;
-        group) option="--groups" ;;
-        *) die "Неизвестный тип ACL principal: $kind" ;;
-    esac
-
-    while IFS=$'\t' read -r path role; do
-        [[ -n "$path" && -n "$role" ]] || continue
-        run "удалить ACL $kind=$principal path=$path role=$role"             pveum acl delete "$path" "$option" "$principal" --roles "$role"
-    done < <(
-        jq -r --arg kind "$kind" --arg principal "$principal" '
-            .[]
-            | select(.type == $kind and .ugid == $principal)
-            | [.path, .roleid]
-            | @tsv
-        ' <<<"$acl_json"
-    )
-}
-
-remove_token() {
-    local userid=$1 token=$2 full
-    full="${userid}!${token}"
-
-    remove_principal_acls token "$full"
-    pve_token_exists "$userid" "$token" || return
-
-    run "удалить PVE API token $full" pveum user token remove "$userid" "$token"
-}
-
-remove_project_user() {
-    local userid=$1 token=$2
-
-    remove_token "$userid" "$token"
-    remove_principal_acls user "$userid"
-    pve_user_exists "$userid" || return
-
-    run "удалить PVE user $userid" pveum user delete "$userid"
-}
-
 pve_role_exists() {
     local role=$1
     pveum role list --output-format json 2>/dev/null         | jq -e --arg role "$role" '.[] | select(.roleid == $role)' >/dev/null
@@ -303,7 +247,7 @@ remove_managed_pool() {
     if (( members > 0 )); then
         warn "Pool managed не пуст. Неизвестные/оставшиеся объекты автоматически не удаляются:"
         jq -r '(.members // [])[] | "  - \(.type // "?") \(.vmid // "?") \(.name // "")"' <<<"$json" >&2
-        block "Pool managed оставлен, потому что в нём есть участники."
+        warn "Pool managed оставлен, потому что в нём есть участники."
         return
     fi
 
@@ -313,7 +257,7 @@ remove_managed_pool() {
     if (( remaining_acls > 0 )); then
         warn "На /pool/managed остались ACL неизвестных principal:"
         pveum acl list --output-format json             | jq -r '.[] | select(.path == "/pool/managed") | "  - \(.type) \(.ugid) role=\(.roleid)"' >&2
-        block "Pool managed оставлен из-за неизвестных ACL."
+        warn "Pool managed оставлен из-за оставшихся ACL."
         return
     fi
 
@@ -329,7 +273,7 @@ remove_linux_deployer() {
     shell="$(cut -d: -f7 <<<"$entry")"
 
     if [[ "$home" != "/var/lib/pvedeploy" || "$shell" != "/bin/bash" ]]; then
-        block "Linux user pvedeploy не соответствует старому контракту проекта (home=$home shell=$shell). Пользователь оставлен."
+        warn "Linux user pvedeploy имеет неожиданные параметры (home=$home shell=$shell) и оставлен."
         return
     fi
 
