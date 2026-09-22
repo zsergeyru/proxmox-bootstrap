@@ -12,7 +12,6 @@ KEEP_VMID=100
 APPLY=0
 CHANGES=0
 INITIAL_STATUS_FILE=""
-BOOTSTRAP_FETCHER=""
 
 C_RESET=""
 C_BOLD=""
@@ -112,11 +111,6 @@ initial_package_list() {
     initial_status_stream | awk '$1 == "Package:" {print $2}' | sort -u
 }
 
-initial_package_exists() {
-    local package=$1
-    [[ -n "$INITIAL_STATUS_FILE" ]] || return 1
-    initial_package_list | grep -Fxq "$package"
-}
 
 require_pve_root() {
     local cmd node_count name
