@@ -414,10 +414,9 @@ ct_exec() {
 }
 
 wait_ct_network() {
-    local i
     log "Ожидание сети внутри LXC $CTID"
 
-    for i in $(seq 1 60); do
+    for _ in $(seq 1 60); do
         if ct_exec sh -c 'ip -4 route show default | grep -q "^default " && getent ahostsv4 github.com >/dev/null 2>&1'; then
             ok "Сеть и DNS внутри LXC $CTID работают"
             return
