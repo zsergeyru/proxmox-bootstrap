@@ -136,9 +136,21 @@ bootstrap-pve.sh --recover
 infra-deployer@pve!automation
 ```
 
-На текущем этапе bootstrap выдаёт ей только `PVEAuditor` для безопасной проверки API.
+Токен использует `privsep=1`. Пользователь и токен получают одинаковые прямые ACL:
 
-Права OpenTofu на создание и изменение обычных VM/LXC будут добавлены отдельным контрактом после проверки минимального набора привилегий. Bootstrap намеренно не выдаёт `PVEAdmin` или право менять пользователей/ACL.
+```text
+/                                 → PVEAuditor
+/pool/managed                     → InfraManagedGuest
+/vms/9000                         → PVETemplateUser
+/storage/local-lvm                → PVEDatastoreUser
+/sdn/zones/localnetwork/vmbr0     → PVESDNUser
+```
+
+`InfraManagedGuest` — единственная собственная роль. Она даёт жизненный цикл обычных VM/LXC только внутри `managed`.
+
+Bootstrap не выдаёт `PVEAdmin`, `Pool.Allocate`, `Permissions.Modify`, `Sys.Modify`, консольные, backup или snapshot-права.
+
+Отдельно проверяется, что на `/vms/910` у token отсутствуют любые изменяющие VM privileges.
 
 ## GitHub
 
