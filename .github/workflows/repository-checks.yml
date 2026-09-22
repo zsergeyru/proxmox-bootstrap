@@ -28,5 +28,13 @@ jobs:
       - name: ShellCheck
         run: shellcheck -S warning bootstrap-pve.sh
 
+      - name: Check public bootstrap boundary
+        run: |
+          grep -q 'PRIVATE_HOST_ACCESS_PATH="scripts/infra-deployer/pve-bootstrap-access.sh"' bootstrap-pve.sh
+          if grep -Eq 'PVEVMAdmin|PVEDatastoreUser|PVESDNUser|PVETemplateUser|InfraManagedGuest|root@pam!infra-deployer' bootstrap-pve.sh; then
+            echo "PVE access policy must stay in the private project"
+            exit 1
+          fi
+
       - name: Check whitespace errors
         run: git diff --check
