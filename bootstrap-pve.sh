@@ -261,7 +261,7 @@ ensure_debian13_template() {
     template_name=$(latest_debian13_template_name)
     [[ -n "$template_name" ]] || die "В каталоге PVE не найден Debian 13 standard LXC template"
 
-    pveam download "$TEMPLATE_STORAGE" "$template_name"
+    pveam download "$TEMPLATE_STORAGE" "$template_name" >&2
     local_ref=$(find_local_debian13_template)
     [[ -n "$local_ref" ]] || die "Debian 13 template скачан, но не найден локально"
 
