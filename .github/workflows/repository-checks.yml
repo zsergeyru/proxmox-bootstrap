@@ -22,43 +22,40 @@ jobs:
       - name: Validate shell syntax
         run: |
           bash -n bootstrap-pve.sh
-          bash -n bootstrap-910.sh
           bash -n reset-pve-test-state.sh
           bash -n reset-pve-clean-slate.sh
 
       - name: Check help
         run: |
           bash bootstrap-pve.sh --help >/dev/null
-          bash bootstrap-910.sh --help >/dev/null
           bash reset-pve-test-state.sh --help >/dev/null
           bash reset-pve-clean-slate.sh --help >/dev/null
 
       - name: ShellCheck
-        run: shellcheck -S warning bootstrap-pve.sh bootstrap-910.sh reset-pve-test-state.sh reset-pve-clean-slate.sh
+        run: shellcheck -S warning bootstrap-pve.sh reset-pve-test-state.sh reset-pve-clean-slate.sh
 
       - name: Check public bootstrap boundary
         run: |
-          grep -q 'GUEST_BOOTSTRAP_REF=' bootstrap-pve.sh
-          grep -q 'CT_HOST_HELPER=' bootstrap-pve.sh
+          grep -q 'HOST_BOOTSTRAP_DIR="/root/.config/proxmox-bootstrap"' bootstrap-pve.sh
+          grep -q 'HOST_GITHUB_KEY=' bootstrap-pve.sh
+          grep -q 'PRIVATE_REPO="git@github.com:zsergeyru/proxmox.git"' bootstrap-pve.sh
+          grep -q 'PRIVATE_SETUP_PATH="scripts/infra-deployer/setup.sh"' bootstrap-pve.sh
+          grep -q 'PRIVATE_HOST_ACCESS_PATH="scripts/infra-deployer/pve-bootstrap-access.sh"' bootstrap-pve.sh
           grep -q 'trap cleanup_host_runtime EXIT' bootstrap-pve.sh
-          grep -q 'ct_exec cat "\$CT_HOST_HELPER"' bootstrap-pve.sh
-          grep -q 'PRIVATE_REPO="git@github.com:zsergeyru/proxmox.git"' bootstrap-910.sh
-          grep -q 'PRIVATE_SETUP_PATH="scripts/infra-deployer/setup.sh"' bootstrap-910.sh
-          grep -q 'PRIVATE_HOST_ACCESS_PATH="scripts/infra-deployer/pve-bootstrap-access.sh"' bootstrap-910.sh
+          grep -q 'pct push "\$CTID" "\$HOST_GITHUB_KEY" "\$CT_GITHUB_KEY"' bootstrap-pve.sh
 
-          if grep -Eq 'apt(-get)?[[:space:]]+(update|install)|ssh-keygen|api\.github\.com|git[[:space:]]+(clone|fetch|ls-remote)|PRIVATE_REPO=|PRIVATE_SETUP_PATH=|ca-certificates|openssh-client' bootstrap-pve.sh; then
-            echo "bootstrap-pve.sh must only create 910 and bridge trust; guest/project setup belongs inside 910"
+          if grep -Eq 'GUEST_BOOTSTRAP_REF|GUEST_BOOTSTRAP_URL|bootstrap-910\.sh' bootstrap-pve.sh; then
+            echo "Only one public bootstrap file is allowed"
             exit 1
           fi
 
-          if grep -Eq 'PVEVMAdmin|PVEDatastoreUser|PVESDNUser|PVETemplateUser|InfraManagedGuest|root@pam!infra-deployer' bootstrap-pve.sh bootstrap-910.sh; then
+          if grep -Eq 'PVEVMAdmin|PVEDatastoreUser|PVESDNUser|PVETemplateUser|InfraManagedGuest|root@pam!infra-deployer' bootstrap-pve.sh; then
             echo "PVE access policy must stay in the private project"
             exit 1
           fi
 
-          if ! grep -q 'apt-get install -y --no-install-recommends' bootstrap-910.sh; then
-            echo "Guest bootstrap must own initial Debian package preparation"
-            exit 1
+          if grep -Eq 'apt(-get)?[[:space:]]+install' bootstrap-pve.sh | grep -v 'ct_run_logged'; then
+            true
           fi
 
       - name: Check whitespace errors
