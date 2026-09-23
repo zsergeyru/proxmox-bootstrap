@@ -42,15 +42,6 @@ curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/main/bo
 curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/main/bootstrap-pve.sh | bash -s -- --update-system
 ```
 
-Для явного Full Clone smoke-test уже существующего Debian template `9000`:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/main/bootstrap-pve.sh | bash -s -- --smoke-test-template
-```
-
-Параметр передаётся без изменения в private PVE Configuration. Если template `9000` только что создан текущим configuration run, smoke-test запускается автоматически и отдельный флаг не требуется.
-
-Smoke-test использует временный VMID `9099`. При успешной проверке VM штатно выключается и удаляется; при ошибке или interruption VM `9099` намеренно сохраняется для диагностики и не удаляется автоматически.
 
 ## Общая orchestration lock
 
