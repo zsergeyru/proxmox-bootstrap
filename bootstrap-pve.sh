@@ -5,7 +5,7 @@ set -Eeuo pipefail
 # Выполняется только на PVE. Отдельные этапы оформлены функциями,
 # а main() задаёт понятную последовательность подготовки LXC 910.
 
-PUBLIC_BOOTSTRAP_VERSION="3.2.0-dev1"
+PUBLIC_BOOTSTRAP_VERSION="3.3.0-dev1"
 
 CTID=910
 CT_HOSTNAME="infra-manager"
