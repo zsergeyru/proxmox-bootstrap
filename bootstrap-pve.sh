@@ -378,13 +378,20 @@ build_net0() {
 }
 
 create_infra_deployer() {
-    local template_ref=$1 net0
+    local template_ref=$1 net0 create_log
     net0=$(build_net0)
+    create_log=$(mktemp /tmp/proxmox-bootstrap-create.XXXXXX)
 
     log "Создание LXC $CTID $CT_HOSTNAME"
 
-    pct create "$CTID" "$template_ref"         --hostname "$CT_HOSTNAME"         --ostype debian         --unprivileged 1         --cores "$CT_CORES"         --memory "$CT_MEMORY_MB"         --swap "$CT_SWAP_MB"         --rootfs "$CT_STORAGE:$CT_DISK_GB"         --net0 "$net0"         --features "nesting=1,keyctl=1"         --onboot 1         --protection 1         --tags "infra-deployer;proxmox-bootstrap"         --description "managed-by=proxmox-bootstrap role=infra-deployer"
+    if ! pct create "$CTID" "$template_ref"         --hostname "$CT_HOSTNAME"         --ostype debian         --unprivileged 1         --cores "$CT_CORES"         --memory "$CT_MEMORY_MB"         --swap "$CT_SWAP_MB"         --rootfs "$CT_STORAGE:$CT_DISK_GB"         --net0 "$net0"         --features "nesting=1,keyctl=1"         --onboot 1         --protection 1         --tags "infra-deployer;proxmox-bootstrap"         --description "managed-by=proxmox-bootstrap role=infra-deployer" >"$create_log" 2>&1; then
+        printf 'Технический вывод pct create:\n' >&2
+        tail -n 40 "$create_log" >&2 || true
+        rm -f "$create_log"
+        die "Не удалось создать LXC $CTID"
+    fi
 
+    rm -f "$create_log"
     assert_owned_ct || die "Созданный LXC $CTID не прошёл ownership-проверку"
     ok "LXC $CTID создан"
 }
