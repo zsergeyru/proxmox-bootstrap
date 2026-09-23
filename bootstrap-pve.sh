@@ -96,6 +96,9 @@ show_bootstrap_banner() {
 
     for arg in "${FORWARD_ARGS[@]}"; do
         case "$arg" in
+            --smoke-test-template)
+                bootstrap_mode 'Full Clone smoke-test template 9000 через временную VM 9099'
+                ;;
             --update-system)
                 bootstrap_mode 'Включено полное обновление Proxmox/Debian'
                 ;;
@@ -113,7 +116,7 @@ show_handoff_banner() {
 usage() {
     cat <<'USAGE'
 Использование:
-  bootstrap-pve.sh [--update-system] [--help]
+  bootstrap-pve.sh [--update-system] [--smoke-test-template] [--help]
 
 Public Bootstrap — публичная точка входа проекта Proxmox.
 
@@ -133,6 +136,7 @@ canonical checkout и host configuration никогда не изменяютс�
 
 Параметры:
   --update-system        дополнительно запросить apt full-upgrade Proxmox/Debian
+  --smoke-test-template  выполнить Full Clone smoke-test template 9000 через временную VM 9099
   -h, --help             показать эту справку
 USAGE
 }
@@ -140,6 +144,7 @@ USAGE
 while (($#)); do
     case "$1" in
         --update-system) FORWARD_ARGS+=("--update-system") ;;
+        --smoke-test-template) FORWARD_ARGS+=("--smoke-test-template") ;;
         -h|--help) usage; exit 0 ;;
         *) die "Неизвестный параметр: $1" ;;
     esac
