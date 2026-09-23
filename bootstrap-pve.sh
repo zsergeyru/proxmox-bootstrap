@@ -26,7 +26,6 @@ PRIVATE_HOST_ACCESS_PATH="scripts/infra-manager/pve-bootstrap-access.sh"
 HOST_BOOTSTRAP_DIR="/root/.config/proxmox-bootstrap"
 HOST_GITHUB_KEY="${HOST_BOOTSTRAP_DIR}/github_proxmox_repo_ed25519"
 HOST_GITHUB_PUB="${HOST_GITHUB_KEY}.pub"
-HOST_TEMPLATE_MARKER="${HOST_BOOTSTRAP_DIR}/debian13-template.ref"
 
 API_USER="root@pam"
 API_TOKEN_NAME="infra-manager"
@@ -283,10 +282,6 @@ ensure_debian13_template() {
     pveam download "$TEMPLATE_STORAGE" "$template_name" >&2
     local_ref=$(find_local_debian13_template)
     [[ -n "$local_ref" ]] || die "Debian 13 template скачан, но не найден локально"
-
-    install -d -o root -g root -m 0700 "$HOST_BOOTSTRAP_DIR"
-    printf '%s\n' "$local_ref" >"$HOST_TEMPLATE_MARKER"
-    chmod 0600 "$HOST_TEMPLATE_MARKER"
 
     ok "Debian 13 LXC template готов: $local_ref" >&2
     printf '%s\n' "$local_ref"
@@ -752,37 +747,12 @@ remove_managed_pool_if_empty() {
     ok "Пустой pool $MANAGED_POOL удалён"
 }
 
-remove_owned_template() {
-    local volume
-
-    if [[ ! -s "$HOST_TEMPLATE_MARKER" ]]; then
-        info "Debian template не отмечен как скачанный bootstrap — сохранён"
-        return
-    fi
-
-    volume=$(head -n1 "$HOST_TEMPLATE_MARKER")
-
-    if [[ ! "$volume" =~ ^local:vztmpl/debian-13-standard_.*_amd64\.tar\.(zst|gz)$ ]]; then
-        warn "Некорректная метка Debian template: $volume"
-        return
-    fi
-
-    if pveam list "$TEMPLATE_STORAGE" 2>/dev/null \
-        | awk -v volume="$volume" '$1 == volume { found=1 } END { exit(found ? 0 : 1) }'; then
-        pveam remove "$volume"
-        ok "Временный Debian template bootstrap удалён: $volume"
-    fi
-
-    rm -f -- "$HOST_TEMPLATE_MARKER"
-}
-
 remove_bootstrap() {
     local full=$1
 
     remove_infra_manager_ct
     remove_api_token_access
     remove_managed_pool_if_empty
-    remove_owned_template
 
     if ((full)); then
         log "Полное удаление bootstrap-состояния"
@@ -804,7 +774,6 @@ ensure_infra_manager_ct() {
 
     template_ref=$(ensure_debian13_template)
     create_infra_manager "$template_ref"
-    remove_owned_template
 }
 
 report_success() {
