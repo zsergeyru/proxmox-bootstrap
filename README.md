@@ -42,7 +42,6 @@ curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/main/bo
 curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/main/bootstrap-pve.sh | bash -s -- --update-system
 ```
 
-
 Для явного Full Clone smoke-test уже существующего Debian template `9000`:
 
 ```bash
