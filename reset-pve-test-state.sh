@@ -298,7 +298,6 @@ remove_project_access() {
     remove_token "root@pam" "infra-manager"
 
     # Следы прежних вариантов проекта.
-    remove_project_user "infra-deployer@pve" "automation"
     remove_project_user "deployer@pve" "host-deploy"
     remove_project_user "ai-agent@pve" "infra"
 
