@@ -607,7 +607,6 @@ configure_infra_manager() {
     log "Основная настройка infra-manager внутри 910"
 
     ct_exec env \
-        INFRA_MANAGER_BOOTSTRAP=1 \
         INFRA_MANAGER_RECOVER="$recover_flag" \
         INFRA_MANAGER_COLOR="$BOOTSTRAP_COLOR" \
         INFRA_MANAGER_LOG_FILE="$CT_LOG_FILE" \
