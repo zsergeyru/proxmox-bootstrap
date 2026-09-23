@@ -402,8 +402,8 @@ remove_project_objects() {
     remove_known_ct "$CT_INFRA" "infra-manager" 1
     remove_known_ct "$CT_TEST" "infra-access-test" 0
 
-    remove_known_vm "$VM_SMOKE" "smoke-debian13-9099"
-    remove_known_vm "$VM_TEMPLATE" "tpl-debian13" "builder-debian13"
+    remove_known_vm "$VM_SMOKE" "smoke-template-9000"
+    remove_known_vm "$VM_TEMPLATE" "tpl-debian13" "builder-9000"
 }
 
 show_preserved_state() {
