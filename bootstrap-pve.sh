@@ -8,7 +8,7 @@ set -Eeuo pipefail
 PUBLIC_BOOTSTRAP_VERSION="3.2.0-dev1"
 
 CTID=910
-CT_HOSTNAME="infra-deployer"
+CT_HOSTNAME="infra-manager"
 CT_CORES=2
 CT_MEMORY_MB=2048
 CT_SWAP_MB=512
@@ -17,11 +17,11 @@ CT_STORAGE="local-lvm"
 CT_BRIDGE="vmbr0"
 TEMPLATE_STORAGE="local"
 
-PROJECT_BRANCH="main"
+PROJECT_BRANCH="rename-infra-manager"
 
 PRIVATE_REPO="git@github.com:zsergeyru/proxmox.git"
-PRIVATE_SETUP_PATH="scripts/infra-deployer/setup.sh"
-PRIVATE_HOST_ACCESS_PATH="scripts/infra-deployer/pve-bootstrap-access.sh"
+PRIVATE_SETUP_PATH="scripts/infra-manager/setup.sh"
+PRIVATE_HOST_ACCESS_PATH="scripts/infra-manager/pve-bootstrap-access.sh"
 
 HOST_BOOTSTRAP_DIR="/root/.config/proxmox-bootstrap"
 HOST_GITHUB_KEY="${HOST_BOOTSTRAP_DIR}/github_proxmox_repo_ed25519"
@@ -29,18 +29,18 @@ HOST_GITHUB_PUB="${HOST_GITHUB_KEY}.pub"
 HOST_TEMPLATE_MARKER="${HOST_BOOTSTRAP_DIR}/debian13-template.ref"
 
 API_USER="root@pam"
-API_TOKEN_NAME="infra-deployer"
+API_TOKEN_NAME="infra-manager"
 API_TOKEN_ID="${API_USER}!${API_TOKEN_NAME}"
 MANAGED_POOL="managed"
 
-CT_BOOTSTRAP_DIR="/root/.infra-deployer-bootstrap"
+CT_BOOTSTRAP_DIR="/root/.infra-manager-bootstrap"
 CT_SECRET_FILE="${CT_BOOTSTRAP_DIR}/pve-api.env"
-CT_PROJECT_DIR="/var/lib/infra-deployer/bootstrap-repo"
+CT_PROJECT_DIR="/var/lib/infra-manager/bootstrap-repo"
 CT_GITHUB_KEY="/root/.ssh/github_proxmox_repo_ed25519"
 CT_GITHUB_PUB="${CT_GITHUB_KEY}.pub"
 CT_GITHUB_KNOWN_HOSTS="/root/.ssh/github_known_hosts"
 CT_GITHUB_SSH_CONFIG="/root/.ssh/github_config"
-CT_LOG_FILE="/var/log/infra-deployer/bootstrap.log"
+CT_LOG_FILE="/var/log/infra-manager/bootstrap.log"
 
 LOCK_FILE="/run/lock/proxmox-bootstrap.lock"
 
@@ -83,10 +83,10 @@ usage() {
   bootstrap-pve.sh [параметры]
 
 Режимы:
-  без параметра режима     создать или подготовить 910 infra-deployer
+  без параметра режима     создать или подготовить 910 infra-manager
   --check                  только проверить готовность существующего 910
   --recover                восстановить/ротировать bootstrap credentials
-  --remove                 мягко удалить infra-deployer, сохранив постоянный GitHub Deploy Key
+  --remove                 мягко удалить infra-manager, сохранив постоянный GitHub Deploy Key
   --purge                  полностью удалить состояние bootstrap
 
 Сеть 910:
@@ -96,7 +96,7 @@ usage() {
 
 Проект:
   --project-branch NAME    ветка закрытого проекта
-                           по умолчанию main
+                           по умолчанию rename-infra-manager
 
 Прочее:
   -h, --help               показать справку
@@ -322,7 +322,7 @@ assert_owned_ct() {
     [[ "$hostname" == "$CT_HOSTNAME" ]]         || die "CTID $CTID занят LXC '$hostname', а ожидается '$CT_HOSTNAME'"
 
     tags=$(ct_config_value tags)
-    has_tag "$tags" "infra-deployer" || die "LXC $CTID не имеет tag infra-deployer"
+    has_tag "$tags" "infra-manager" || die "LXC $CTID не имеет tag infra-manager"
     has_tag "$tags" "proxmox-bootstrap" || die "LXC $CTID не имеет tag proxmox-bootstrap"
 }
 
@@ -384,7 +384,7 @@ create_infra_deployer() {
 
     log "Создание LXC $CTID $CT_HOSTNAME"
 
-    if ! pct create "$CTID" "$template_ref"         --hostname "$CT_HOSTNAME"         --ostype debian         --unprivileged 1         --cores "$CT_CORES"         --memory "$CT_MEMORY_MB"         --swap "$CT_SWAP_MB"         --rootfs "$CT_STORAGE:$CT_DISK_GB"         --net0 "$net0"         --features "nesting=1,keyctl=1"         --onboot 1         --protection 1         --tags "infra-deployer;proxmox-bootstrap"         --description "managed-by=proxmox-bootstrap role=infra-deployer" >"$create_log" 2>&1; then
+    if ! pct create "$CTID" "$template_ref"         --hostname "$CT_HOSTNAME"         --ostype debian         --unprivileged 1         --cores "$CT_CORES"         --memory "$CT_MEMORY_MB"         --swap "$CT_SWAP_MB"         --rootfs "$CT_STORAGE:$CT_DISK_GB"         --net0 "$net0"         --features "nesting=1,keyctl=1"         --onboot 1         --protection 1         --tags "infra-manager;proxmox-bootstrap"         --description "managed-by=proxmox-bootstrap role=infra-manager" >"$create_log" 2>&1; then
         printf 'Технический вывод pct create:\n' >&2
         tail -n 40 "$create_log" >&2 || true
         rm -f "$create_log"
@@ -475,7 +475,7 @@ ensure_host_github_key() {
 
     rm -f "$HOST_GITHUB_KEY" "$HOST_GITHUB_PUB"
     ssh-keygen -q -t ed25519 -N '' \
-        -C infra-deployer-readonly-zsergeyru-proxmox \
+        -C infra-manager-readonly-zsergeyru-proxmox \
         -f "$HOST_GITHUB_KEY"
     chmod 0600 "$HOST_GITHUB_KEY"
     chmod 0644 "$HOST_GITHUB_PUB"
@@ -593,10 +593,10 @@ configure_pve_access() {
     log "Одноразовая выдача 910 ограниченного доступа к PVE"
 
     ct_exec cat "$source" \
-        | INFRA_DEPLOYER_CTID="$CTID" \
-          INFRA_DEPLOYER_MODE="$MODE" \
-          INFRA_DEPLOYER_SECRET_FILE="$CT_SECRET_FILE" \
-          INFRA_DEPLOYER_COLOR="$BOOTSTRAP_COLOR" \
+        | INFRA_MANAGER_CTID="$CTID" \
+          INFRA_MANAGER_MODE="$MODE" \
+          INFRA_MANAGER_SECRET_FILE="$CT_SECRET_FILE" \
+          INFRA_MANAGER_COLOR="$BOOTSTRAP_COLOR" \
           bash
 
     ok "Ограниченный доступ 910 к PVE подготовлен"
@@ -611,13 +611,13 @@ configure_infra_deployer() {
 
     [[ "$MODE" == "recover" ]] && recover_flag=1
 
-    log "Основная настройка infra-deployer внутри 910"
+    log "Основная настройка infra-manager внутри 910"
 
     ct_exec env \
-        INFRA_DEPLOYER_BOOTSTRAP=1 \
-        INFRA_DEPLOYER_RECOVER="$recover_flag" \
-        INFRA_DEPLOYER_COLOR="$BOOTSTRAP_COLOR" \
-        INFRA_DEPLOYER_LOG_FILE="$CT_LOG_FILE" \
+        INFRA_MANAGER_BOOTSTRAP=1 \
+        INFRA_MANAGER_RECOVER="$recover_flag" \
+        INFRA_MANAGER_COLOR="$BOOTSTRAP_COLOR" \
+        INFRA_MANAGER_LOG_FILE="$CT_LOG_FILE" \
         INFRA_PROJECT_BRANCH="$PROJECT_BRANCH" \
         PVE_API_SECRET_FILE="$CT_SECRET_FILE" \
         bash "$setup"
@@ -633,13 +633,13 @@ verify_infra_deployer() {
     status=$(pct status "$CTID" | awk '{print $2}')
     [[ "$status" == "running" ]] || die "LXC $CTID не запущен"
 
-    ct_exec test -x /usr/local/sbin/infra-deployer-status \
-        || die "В 910 отсутствует infra-deployer-status"
+    ct_exec test -x /usr/local/sbin/infra-manager-status \
+        || die "В 910 отсутствует infra-manager-status"
 
-    ct_exec env INFRA_DEPLOYER_COLOR="$BOOTSTRAP_COLOR" \
-        /usr/local/sbin/infra-deployer-status --full
+    ct_exec env INFRA_MANAGER_COLOR="$BOOTSTRAP_COLOR" \
+        /usr/local/sbin/infra-manager-status --full
 
-    ok "910 infra-deployer готов"
+    ok "910 infra-manager готов"
 }
 
 api_token_exists() {
@@ -654,7 +654,7 @@ api_token_exists() {
 remove_api_token_access() {
     local entry path role
 
-    log "Удаление доступа infra-deployer к PVE"
+    log "Удаление доступа infra-manager к PVE"
 
     while IFS= read -r entry; do
         [[ -n "$entry" ]] || continue

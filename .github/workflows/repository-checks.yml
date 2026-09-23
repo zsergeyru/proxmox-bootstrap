@@ -39,8 +39,8 @@ jobs:
           grep -q 'HOST_BOOTSTRAP_DIR="/root/.config/proxmox-bootstrap"' bootstrap-pve.sh
           grep -q 'HOST_GITHUB_KEY=' bootstrap-pve.sh
           grep -q 'PRIVATE_REPO="git@github.com:zsergeyru/proxmox.git"' bootstrap-pve.sh
-          grep -q 'PRIVATE_SETUP_PATH="scripts/infra-deployer/setup.sh"' bootstrap-pve.sh
-          grep -q 'PRIVATE_HOST_ACCESS_PATH="scripts/infra-deployer/pve-bootstrap-access.sh"' bootstrap-pve.sh
+          grep -q 'PRIVATE_SETUP_PATH="scripts/infra-manager/setup.sh"' bootstrap-pve.sh
+          grep -q 'PRIVATE_HOST_ACCESS_PATH="scripts/infra-manager/pve-bootstrap-access.sh"' bootstrap-pve.sh
           grep -q 'exec 9>"\$LOCK_FILE"' bootstrap-pve.sh
           grep -q 'flock -n 9' bootstrap-pve.sh
           grep -q 'pct push "\$CTID" "\$HOST_GITHUB_KEY" "\$CT_GITHUB_KEY"' bootstrap-pve.sh
@@ -55,7 +55,7 @@ jobs:
             exit 1
           fi
 
-          if grep -Eq 'PVEVMAdmin|PVEDatastoreUser|PVESDNUser|PVETemplateUser|InfraManagedGuest|root@pam!infra-deployer' bootstrap-pve.sh; then
+          if grep -Eq 'PVEVMAdmin|PVEDatastoreUser|PVESDNUser|PVETemplateUser|InfraManagedGuest|root@pam!infra-manager' bootstrap-pve.sh; then
             echo "PVE access policy must stay in the private project"
             exit 1
           fi
@@ -64,7 +64,7 @@ jobs:
           grep -q 'ensure_infra_deployer_ct' bootstrap-pve.sh
           grep -q '^verify_ct_contract() {' bootstrap-pve.sh
           grep -q 'verify_ct_contract' bootstrap-pve.sh
-          grep -q '/usr/local/sbin/infra-deployer-status --full' bootstrap-pve.sh
+          grep -q '/usr/local/sbin/infra-manager-status --full' bootstrap-pve.sh
           grep -q 'ensure_host_github_key' bootstrap-pve.sh
           grep -q 'checkout_private_project' bootstrap-pve.sh
           grep -q 'configure_pve_access' bootstrap-pve.sh
