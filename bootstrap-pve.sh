@@ -17,7 +17,7 @@ CT_STORAGE="local-lvm"
 CT_BRIDGE="vmbr0"
 TEMPLATE_STORAGE="local"
 
-PROJECT_BRANCH="infra-iac-redesign"
+PROJECT_BRANCH="main"
 
 PRIVATE_REPO="git@github.com:zsergeyru/proxmox.git"
 PRIVATE_SETUP_PATH="scripts/infra-deployer/setup.sh"
@@ -96,7 +96,7 @@ usage() {
 
 Проект:
   --project-branch NAME    ветка закрытого проекта
-                           по умолчанию infra-iac-redesign
+                           по умолчанию main
 
 Прочее:
   -h, --help               показать справку

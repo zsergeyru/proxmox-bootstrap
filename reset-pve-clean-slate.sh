@@ -697,7 +697,7 @@ remove_non_initial_manual_packages() {
 }
 
 print_bootstrap_entrypoint() {
-    local url="https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/infra-iac-redesign/bootstrap-pve.sh"
+    local url="https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/main/bootstrap-pve.sh"
 
     log "Команда первого запуска bootstrap после очистки"
 

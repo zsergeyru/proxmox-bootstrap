@@ -7,7 +7,7 @@
 Обычная установка или повторное применение без параметров — сразу из GitHub:
 
 ~~~bash
-curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/infra-iac-redesign/bootstrap-pve.sh | bash
+curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/main/bootstrap-pve.sh | bash
 ~~~
 
 ## Запуск с параметрами
@@ -15,7 +15,7 @@ curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/infra-i
 Если нужны `--help`, проверка, восстановление, удаление или другие параметры, сначала скачайте сценарий:
 
 ~~~bash
-curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/infra-iac-redesign/bootstrap-pve.sh -o bootstrap-pve.sh
+curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/main/bootstrap-pve.sh -o bootstrap-pve.sh
 chmod +x bootstrap-pve.sh
 ~~~
 
