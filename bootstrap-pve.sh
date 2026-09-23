@@ -44,6 +44,7 @@ CT_LOG_FILE="/var/log/infra-manager/bootstrap.log"
 LOCK_FILE="/run/lock/proxmox-bootstrap.lock"
 
 MODE="apply"
+CT_CREATED=0
 CT_IP="dhcp"
 CT_GATEWAY=""
 
@@ -85,8 +86,6 @@ usage() {
   без параметра режима     создать или подготовить 910 infra-manager
   --check                  только проверить готовность существующего 910
   --recover                восстановить/ротировать bootstrap credentials
-  --remove                 мягко удалить infra-manager, сохранив постоянный GitHub Deploy Key
-  --purge                  полностью удалить состояние bootstrap
 
 Сеть 910:
   по умолчанию             DHCP
@@ -133,14 +132,6 @@ parse_args() {
                 [[ "$MODE" == "apply" ]] || die "Можно выбрать только один режим"
                 MODE="recover"
                 ;;
-            --remove)
-                [[ "$MODE" == "apply" ]] || die "Можно выбрать только один режим"
-                MODE="remove"
-                ;;
-            --purge)
-                [[ "$MODE" == "apply" ]] || die "Можно выбрать только один режим"
-                MODE="purge"
-                ;;
             --ip)
                 shift
                 (($#)) || die "После --ip требуется CIDR"
@@ -177,9 +168,6 @@ parse_args() {
 
     [[ "$PROJECT_BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]]         || die "Некорректное имя ветки проекта: $PROJECT_BRANCH"
 
-    if [[ "$MODE" == "remove" || "$MODE" == "purge" ]]; then
-        [[ "$CT_IP" == "dhcp" && -z "$CT_GATEWAY" ]]             || die "--ip и --gateway не используются вместе с режимом удаления"
-    fi
 }
 
 # --- PVE ------------------------------------------------------------------
@@ -381,6 +369,7 @@ create_infra_manager() {
     pct create "$CTID" "$template_ref"         --hostname "$CT_HOSTNAME"         --ostype debian         --unprivileged 1         --cores "$CT_CORES"         --memory "$CT_MEMORY_MB"         --swap "$CT_SWAP_MB"         --rootfs "$CT_STORAGE:$CT_DISK_GB"         --net0 "$net0"         --features "nesting=1,keyctl=1"         --onboot 1         --protection 1         --tags "infra-manager;proxmox-bootstrap"         --description "managed-by=proxmox-bootstrap role=infra-manager"
 
     assert_owned_ct || die "Созданный LXC $CTID не прошёл ownership-проверку"
+    CT_CREATED=1
     ok "LXC $CTID создан"
 }
 
@@ -574,6 +563,11 @@ checkout_private_project() {
 
 configure_pve_access() {
     local source="$CT_PROJECT_DIR/$PRIVATE_HOST_ACCESS_PATH"
+    local access_mode="$MODE"
+
+    if (( CT_CREATED )); then
+        access_mode="recover"
+    fi
 
     ct_exec test -s "$source" \
         || die "В закрытом проекте отсутствует $PRIVATE_HOST_ACCESS_PATH"
@@ -582,7 +576,7 @@ configure_pve_access() {
 
     ct_exec cat "$source" \
         | INFRA_MANAGER_CTID="$CTID" \
-          INFRA_MANAGER_MODE="$MODE" \
+          INFRA_MANAGER_MODE="$access_mode" \
           INFRA_MANAGER_SECRET_FILE="$CT_SECRET_FILE" \
           INFRA_MANAGER_COLOR="$BOOTSTRAP_COLOR" \
           bash
@@ -629,139 +623,6 @@ verify_infra_manager() {
     ok "910 infra-manager готов"
 }
 
-api_token_exists() {
-    pveum user token list "$API_USER" --output-format json 2>/dev/null \
-        | perl -MJSON::PP -0777 -e '
-            my $token = shift;
-            my $rows = decode_json(<STDIN>);
-            exit((grep { (($_->{tokenid} // q{}) eq $token) } @$rows) ? 0 : 1);
-        ' "$API_TOKEN_NAME"
-}
-
-remove_api_token_access() {
-    local entry path role
-
-    log "Удаление доступа infra-manager к PVE"
-
-    while IFS= read -r entry; do
-        [[ -n "$entry" ]] || continue
-        path=${entry%%|*}
-        role=${entry#*|}
-        [[ -n "$path" && -n "$role" ]] || continue
-        pveum acl delete "$path" --tokens "$API_TOKEN_ID" --roles "$role"
-    done < <(
-        pveum acl list --output-format json \
-            | perl -MJSON::PP -0777 -e '
-                my $token = shift;
-                my $rows = decode_json(<STDIN>);
-                for my $row (@$rows) {
-                    next unless (($row->{type} // q{}) eq q{token});
-                    next unless (($row->{ugid} // q{}) eq $token);
-                    print(($row->{path} // q{}), q{|}, ($row->{roleid} // q{}), qq{\n});
-                }
-            ' "$API_TOKEN_ID"
-    )
-
-    if api_token_exists; then
-        pveum user token remove "$API_USER" "$API_TOKEN_NAME"
-        ok "PVE API token $API_TOKEN_ID удалён"
-    else
-        ok "PVE API token уже отсутствует"
-    fi
-}
-
-remove_infra_manager_ct() {
-    local status lock protection
-
-    vm_exists && die "VMID $CTID занят виртуальной машиной. Удаление запрещено."
-
-    if ! ct_exists; then
-        ok "LXC $CTID уже отсутствует"
-        return
-    fi
-
-    assert_owned_ct || die "LXC $CTID не принадлежит bootstrap"
-
-    lock=$(ct_config_value lock)
-    [[ -z "$lock" ]] \
-        || die "LXC $CTID заблокирован PVE (lock=$lock). Автоматическое снятие lock запрещено."
-
-    status=$(pct status "$CTID" | awk '{print $2}')
-    protection=$(ct_config_value protection)
-
-    log "Удаление LXC $CTID $CT_HOSTNAME"
-
-    if [[ "$status" == "running" ]]; then
-        pct stop "$CTID"
-    fi
-
-    if [[ "$protection" == "1" ]]; then
-        pct set "$CTID" --protection 0
-    fi
-
-    pct destroy "$CTID" --purge 1
-    ok "LXC $CTID удалён"
-}
-
-managed_pool_exists() {
-    pvesh get "/pools/$MANAGED_POOL" --output-format json >/dev/null 2>&1
-}
-
-remove_managed_pool_if_empty() {
-    local json members remaining_acls
-
-    if ! managed_pool_exists; then
-        ok "Pool $MANAGED_POOL уже отсутствует"
-        return
-    fi
-
-    json=$(pvesh get "/pools/$MANAGED_POOL" --output-format json)
-    members=$(
-        perl -MJSON::PP -0777 -e '
-            my $row = decode_json(<STDIN>);
-            print scalar(@{ $row->{members} // [] });
-        ' <<<"$json"
-    )
-
-    if ((members > 0)); then
-        warn "Pool $MANAGED_POOL не пуст и сохранён"
-        return
-    fi
-
-    remaining_acls=$(
-        pveum acl list --output-format json \
-            | perl -MJSON::PP -0777 -e '
-                my $path = shift;
-                my $rows = decode_json(<STDIN>);
-                my $count = grep { (($_->{path} // q{}) eq $path) } @$rows;
-                print $count;
-            ' "/pool/$MANAGED_POOL"
-    )
-
-    if ((remaining_acls > 0)); then
-        warn "Pool $MANAGED_POOL имеет сторонние ACL и сохранён"
-        return
-    fi
-
-    pveum pool delete "$MANAGED_POOL"
-    ok "Пустой pool $MANAGED_POOL удалён"
-}
-
-remove_bootstrap() {
-    local full=$1
-
-    remove_infra_manager_ct
-    remove_api_token_access
-    remove_managed_pool_if_empty
-
-    if ((full)); then
-        log "Полное удаление bootstrap-состояния"
-        rm -rf -- "$HOST_BOOTSTRAP_DIR"
-        ok "Постоянное bootstrap-состояние на PVE удалено"
-    else
-        ok "Мягкое удаление завершено; GitHub Deploy Key сохранён"
-    fi
-}
 ensure_infra_manager_ct() {
     local template_ref=""
 
@@ -790,15 +651,6 @@ main() {
 
     acquire_lock
 
-    if [[ "$MODE" == "remove" ]]; then
-        remove_bootstrap 0
-        return
-    fi
-
-    if [[ "$MODE" == "purge" ]]; then
-        remove_bootstrap 1
-        return
-    fi
 
     host_preflight
     ensure_infra_manager_ct
