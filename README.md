@@ -1,6 +1,6 @@
 # Proxmox Bootstrap
 
-Публичный bootstrap для первоначального развёртывания и обслуживания `910 infra-deployer` на Proxmox VE.
+Публичный bootstrap для первоначального развёртывания и обслуживания `910 infra-manager` на Proxmox VE.
 
 ## Быстрый запуск
 
