@@ -339,7 +339,7 @@ remove_project_files() {
 
     log "Удаление файлов и резервных копий проекта с PVE"
 
-    for path in         /root/.config/proxmox-bootstrap         /etc/proxmox-deployer         /var/lib/proxmox-deployer         /var/lib/pvedeploy         /var/log/proxmox-deployer         /etc/infra-manager         /var/lib/infra-manager         /opt/infra-manager         /var/log/infra-manager         /run/proxmox-bootstrap         /var/backups/proxmox-bootstrap         /var/backups/proxmox-configuration         /var/backups/proxmox-secrets
+    for path in         /root/.config/proxmox-bootstrap         /etc/proxmox-deployer         /var/lib/proxmox-deployer         /var/lib/pvedeploy         /var/log/proxmox-deployer         /etc/infra-deployer         /var/lib/infra-deployer         /opt/infra-deployer         /run/proxmox-bootstrap         /var/backups/proxmox-bootstrap         /var/backups/proxmox-configuration         /var/backups/proxmox-secrets
     do
         remove_path "$path" "удалить проектный каталог"
     done

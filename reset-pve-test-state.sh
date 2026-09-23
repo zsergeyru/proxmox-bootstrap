@@ -158,8 +158,8 @@ remove_known_ct() {
     fi
 
     if (( require_bootstrap_tags )); then
-        if ! tag_present "$tags" "infra-manager" || ! tag_present "$tags" "proxmox-bootstrap"; then
-            block "LXC $vmid похож на infra-manager, но не имеет обеих bootstrap-меток. Объект оставлен."
+        if ! tag_present "$tags" "infra-deployer" || ! tag_present "$tags" "proxmox-bootstrap"; then
+            block "LXC $vmid похож на infra-deployer, но не имеет обеих bootstrap-меток. Объект оставлен."
             return
         fi
     fi
@@ -295,9 +295,10 @@ remove_project_access() {
     log "PVE users, tokens, ACL и роли"
 
     # Текущая чистая схема: удаляется только token, root@pam не трогаем.
-    remove_token "root@pam" "infra-manager"
+    remove_token "root@pam" "infra-deployer"
 
     # Следы прежних вариантов проекта.
+    remove_project_user "infra-deployer@pve" "automation"
     remove_project_user "deployer@pve" "host-deploy"
     remove_project_user "ai-agent@pve" "infra"
 
@@ -398,11 +399,11 @@ remove_project_files() {
 remove_project_objects() {
     log "Виртуальные объекты проекта"
 
-    remove_known_ct "$CT_INFRA" "infra-manager" 1
+    remove_known_ct "$CT_INFRA" "infra-deployer" 1
     remove_known_ct "$CT_TEST" "infra-access-test" 0
 
-    remove_known_vm "$VM_SMOKE" "smoke-template-9000"
-    remove_known_vm "$VM_TEMPLATE" "tpl-debian13" "builder-9000"
+    remove_known_vm "$VM_SMOKE" "smoke-debian13-9099"
+    remove_known_vm "$VM_TEMPLATE" "tpl-debian13" "builder-debian13"
 }
 
 show_preserved_state() {

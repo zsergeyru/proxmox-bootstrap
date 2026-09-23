@@ -5,10 +5,10 @@ set -Eeuo pipefail
 # Выполняется только на PVE. Отдельные этапы оформлены функциями,
 # а main() задаёт понятную последовательность подготовки LXC 910.
 
-PUBLIC_BOOTSTRAP_VERSION="3.4.0-dev1"
+PUBLIC_BOOTSTRAP_VERSION="3.2.0-dev1"
 
 CTID=910
-CT_HOSTNAME="infra-manager"
+CT_HOSTNAME="infra-deployer"
 CT_CORES=2
 CT_MEMORY_MB=2048
 CT_SWAP_MB=512
@@ -20,31 +20,31 @@ TEMPLATE_STORAGE="local"
 PROJECT_BRANCH="infra-iac-redesign"
 
 PRIVATE_REPO="git@github.com:zsergeyru/proxmox.git"
-PRIVATE_SETUP_PATH="scripts/infra-manager/setup.sh"
-PRIVATE_HOST_ACCESS_PATH="scripts/infra-manager/pve-bootstrap-access.sh"
+PRIVATE_SETUP_PATH="scripts/infra-deployer/setup.sh"
+PRIVATE_HOST_ACCESS_PATH="scripts/infra-deployer/pve-bootstrap-access.sh"
 
 HOST_BOOTSTRAP_DIR="/root/.config/proxmox-bootstrap"
 HOST_GITHUB_KEY="${HOST_BOOTSTRAP_DIR}/github_proxmox_repo_ed25519"
 HOST_GITHUB_PUB="${HOST_GITHUB_KEY}.pub"
+HOST_TEMPLATE_MARKER="${HOST_BOOTSTRAP_DIR}/debian13-template.ref"
 
 API_USER="root@pam"
-API_TOKEN_NAME="infra-manager"
+API_TOKEN_NAME="infra-deployer"
 API_TOKEN_ID="${API_USER}!${API_TOKEN_NAME}"
 MANAGED_POOL="managed"
 
-CT_BOOTSTRAP_DIR="/root/.infra-manager-bootstrap"
+CT_BOOTSTRAP_DIR="/root/.infra-deployer-bootstrap"
 CT_SECRET_FILE="${CT_BOOTSTRAP_DIR}/pve-api.env"
-CT_PROJECT_DIR="/var/lib/infra-manager/bootstrap-repo"
+CT_PROJECT_DIR="/var/lib/infra-deployer/bootstrap-repo"
 CT_GITHUB_KEY="/root/.ssh/github_proxmox_repo_ed25519"
 CT_GITHUB_PUB="${CT_GITHUB_KEY}.pub"
 CT_GITHUB_KNOWN_HOSTS="/root/.ssh/github_known_hosts"
 CT_GITHUB_SSH_CONFIG="/root/.ssh/github_config"
-CT_LOG_FILE="/var/log/infra-manager/bootstrap.log"
+CT_LOG_FILE="/var/log/infra-deployer/bootstrap.log"
 
 LOCK_FILE="/run/lock/proxmox-bootstrap.lock"
 
 MODE="apply"
-CT_CREATED=0
 CT_IP="dhcp"
 CT_GATEWAY=""
 
@@ -83,9 +83,11 @@ usage() {
   bootstrap-pve.sh [параметры]
 
 Режимы:
-  без параметра режима     создать или подготовить 910 infra-manager
+  без параметра режима     создать или подготовить 910 infra-deployer
   --check                  только проверить готовность существующего 910
   --recover                восстановить/ротировать bootstrap credentials
+  --remove                 мягко удалить infra-deployer, сохранив постоянный GitHub Deploy Key
+  --purge                  полностью удалить состояние bootstrap
 
 Сеть 910:
   по умолчанию             DHCP
@@ -132,6 +134,14 @@ parse_args() {
                 [[ "$MODE" == "apply" ]] || die "Можно выбрать только один режим"
                 MODE="recover"
                 ;;
+            --remove)
+                [[ "$MODE" == "apply" ]] || die "Можно выбрать только один режим"
+                MODE="remove"
+                ;;
+            --purge)
+                [[ "$MODE" == "apply" ]] || die "Можно выбрать только один режим"
+                MODE="purge"
+                ;;
             --ip)
                 shift
                 (($#)) || die "После --ip требуется CIDR"
@@ -168,6 +178,9 @@ parse_args() {
 
     [[ "$PROJECT_BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]]         || die "Некорректное имя ветки проекта: $PROJECT_BRANCH"
 
+    if [[ "$MODE" == "remove" || "$MODE" == "purge" ]]; then
+        [[ "$CT_IP" == "dhcp" && -z "$CT_GATEWAY" ]]             || die "--ip и --gateway не используются вместе с режимом удаления"
+    fi
 }
 
 # --- PVE ------------------------------------------------------------------
@@ -271,6 +284,10 @@ ensure_debian13_template() {
     local_ref=$(find_local_debian13_template)
     [[ -n "$local_ref" ]] || die "Debian 13 template скачан, но не найден локально"
 
+    install -d -o root -g root -m 0700 "$HOST_BOOTSTRAP_DIR"
+    printf '%s\n' "$local_ref" >"$HOST_TEMPLATE_MARKER"
+    chmod 0600 "$HOST_TEMPLATE_MARKER"
+
     ok "Debian 13 LXC template готов: $local_ref" >&2
     printf '%s\n' "$local_ref"
 }
@@ -305,7 +322,7 @@ assert_owned_ct() {
     [[ "$hostname" == "$CT_HOSTNAME" ]]         || die "CTID $CTID занят LXC '$hostname', а ожидается '$CT_HOSTNAME'"
 
     tags=$(ct_config_value tags)
-    has_tag "$tags" "infra-manager" || die "LXC $CTID не имеет tag infra-manager"
+    has_tag "$tags" "infra-deployer" || die "LXC $CTID не имеет tag infra-deployer"
     has_tag "$tags" "proxmox-bootstrap" || die "LXC $CTID не имеет tag proxmox-bootstrap"
 }
 
@@ -360,16 +377,15 @@ build_net0() {
     fi
 }
 
-create_infra_manager() {
+create_infra_deployer() {
     local template_ref=$1 net0
     net0=$(build_net0)
 
     log "Создание LXC $CTID $CT_HOSTNAME"
 
-    pct create "$CTID" "$template_ref"         --hostname "$CT_HOSTNAME"         --ostype debian         --unprivileged 1         --cores "$CT_CORES"         --memory "$CT_MEMORY_MB"         --swap "$CT_SWAP_MB"         --rootfs "$CT_STORAGE:$CT_DISK_GB"         --net0 "$net0"         --features "nesting=1,keyctl=1"         --onboot 1         --protection 1         --tags "infra-manager;proxmox-bootstrap"         --description "managed-by=proxmox-bootstrap role=infra-manager"
+    pct create "$CTID" "$template_ref"         --hostname "$CT_HOSTNAME"         --ostype debian         --unprivileged 1         --cores "$CT_CORES"         --memory "$CT_MEMORY_MB"         --swap "$CT_SWAP_MB"         --rootfs "$CT_STORAGE:$CT_DISK_GB"         --net0 "$net0"         --features "nesting=1,keyctl=1"         --onboot 1         --protection 1         --tags "infra-deployer;proxmox-bootstrap"         --description "managed-by=proxmox-bootstrap role=infra-deployer"
 
     assert_owned_ct || die "Созданный LXC $CTID не прошёл ownership-проверку"
-    CT_CREATED=1
     ok "LXC $CTID создан"
 }
 
@@ -452,7 +468,7 @@ ensure_host_github_key() {
 
     rm -f "$HOST_GITHUB_KEY" "$HOST_GITHUB_PUB"
     ssh-keygen -q -t ed25519 -N '' \
-        -C infra-manager-readonly-zsergeyru-proxmox \
+        -C infra-deployer-readonly-zsergeyru-proxmox \
         -f "$HOST_GITHUB_KEY"
     chmod 0600 "$HOST_GITHUB_KEY"
     chmod 0644 "$HOST_GITHUB_PUB"
@@ -460,7 +476,7 @@ ensure_host_github_key() {
     ok "GitHub Deploy Key создан и сохранён на PVE"
 }
 
-prepare_infra_manager_os() {
+prepare_infra_deployer_os() {
     log "Минимальная подготовка Debian внутри LXC $CTID"
 
     init_ct_log
@@ -563,11 +579,6 @@ checkout_private_project() {
 
 configure_pve_access() {
     local source="$CT_PROJECT_DIR/$PRIVATE_HOST_ACCESS_PATH"
-    local access_mode="$MODE"
-
-    if (( CT_CREATED )); then
-        access_mode="recover"
-    fi
 
     ct_exec test -s "$source" \
         || die "В закрытом проекте отсутствует $PRIVATE_HOST_ACCESS_PATH"
@@ -575,16 +586,16 @@ configure_pve_access() {
     log "Одноразовая выдача 910 ограниченного доступа к PVE"
 
     ct_exec cat "$source" \
-        | INFRA_MANAGER_CTID="$CTID" \
-          INFRA_MANAGER_MODE="$access_mode" \
-          INFRA_MANAGER_SECRET_FILE="$CT_SECRET_FILE" \
-          INFRA_MANAGER_COLOR="$BOOTSTRAP_COLOR" \
+        | INFRA_DEPLOYER_CTID="$CTID" \
+          INFRA_DEPLOYER_MODE="$MODE" \
+          INFRA_DEPLOYER_SECRET_FILE="$CT_SECRET_FILE" \
+          INFRA_DEPLOYER_COLOR="$BOOTSTRAP_COLOR" \
           bash
 
     ok "Ограниченный доступ 910 к PVE подготовлен"
 }
 
-configure_infra_manager() {
+configure_infra_deployer() {
     local setup="$CT_PROJECT_DIR/$PRIVATE_SETUP_PATH"
     local recover_flag=0
 
@@ -593,12 +604,13 @@ configure_infra_manager() {
 
     [[ "$MODE" == "recover" ]] && recover_flag=1
 
-    log "Основная настройка infra-manager внутри 910"
+    log "Основная настройка infra-deployer внутри 910"
 
     ct_exec env \
-        INFRA_MANAGER_RECOVER="$recover_flag" \
-        INFRA_MANAGER_COLOR="$BOOTSTRAP_COLOR" \
-        INFRA_MANAGER_LOG_FILE="$CT_LOG_FILE" \
+        INFRA_DEPLOYER_BOOTSTRAP=1 \
+        INFRA_DEPLOYER_RECOVER="$recover_flag" \
+        INFRA_DEPLOYER_COLOR="$BOOTSTRAP_COLOR" \
+        INFRA_DEPLOYER_LOG_FILE="$CT_LOG_FILE" \
         INFRA_PROJECT_BRANCH="$PROJECT_BRANCH" \
         PVE_API_SECRET_FILE="$CT_SECRET_FILE" \
         bash "$setup"
@@ -607,23 +619,181 @@ configure_infra_manager() {
     ok "Внутренняя настройка 910 завершена"
 }
 
-verify_infra_manager() {
+verify_infra_deployer() {
     local status
 
     assert_owned_ct || die "LXC $CTID отсутствует"
     status=$(pct status "$CTID" | awk '{print $2}')
     [[ "$status" == "running" ]] || die "LXC $CTID не запущен"
 
-    ct_exec test -x /usr/local/sbin/infra-manager-status \
-        || die "В 910 отсутствует infra-manager-status"
+    ct_exec test -x /usr/local/sbin/infra-deployer-status \
+        || die "В 910 отсутствует infra-deployer-status"
 
-    ct_exec env INFRA_MANAGER_COLOR="$BOOTSTRAP_COLOR" \
-        /usr/local/sbin/infra-manager-status --full
+    ct_exec env INFRA_DEPLOYER_COLOR="$BOOTSTRAP_COLOR" \
+        /usr/local/sbin/infra-deployer-status --full
 
-    ok "910 infra-manager готов"
+    ok "910 infra-deployer готов"
 }
 
-ensure_infra_manager_ct() {
+api_token_exists() {
+    pveum user token list "$API_USER" --output-format json 2>/dev/null \
+        | perl -MJSON::PP -0777 -e '
+            my $token = shift;
+            my $rows = decode_json(<STDIN>);
+            exit((grep { (($_->{tokenid} // q{}) eq $token) } @$rows) ? 0 : 1);
+        ' "$API_TOKEN_NAME"
+}
+
+remove_api_token_access() {
+    local entry path role
+
+    log "Удаление доступа infra-deployer к PVE"
+
+    while IFS= read -r entry; do
+        [[ -n "$entry" ]] || continue
+        path=${entry%%|*}
+        role=${entry#*|}
+        [[ -n "$path" && -n "$role" ]] || continue
+        pveum acl delete "$path" --tokens "$API_TOKEN_ID" --roles "$role"
+    done < <(
+        pveum acl list --output-format json \
+            | perl -MJSON::PP -0777 -e '
+                my $token = shift;
+                my $rows = decode_json(<STDIN>);
+                for my $row (@$rows) {
+                    next unless (($row->{type} // q{}) eq q{token});
+                    next unless (($row->{ugid} // q{}) eq $token);
+                    print(($row->{path} // q{}), q{|}, ($row->{roleid} // q{}), qq{\n});
+                }
+            ' "$API_TOKEN_ID"
+    )
+
+    if api_token_exists; then
+        pveum user token remove "$API_USER" "$API_TOKEN_NAME"
+        ok "PVE API token $API_TOKEN_ID удалён"
+    else
+        ok "PVE API token уже отсутствует"
+    fi
+}
+
+remove_infra_deployer_ct() {
+    local status lock protection
+
+    vm_exists && die "VMID $CTID занят виртуальной машиной. Удаление запрещено."
+
+    if ! ct_exists; then
+        ok "LXC $CTID уже отсутствует"
+        return
+    fi
+
+    assert_owned_ct || die "LXC $CTID не принадлежит bootstrap"
+
+    lock=$(ct_config_value lock)
+    [[ -z "$lock" ]] \
+        || die "LXC $CTID заблокирован PVE (lock=$lock). Автоматическое снятие lock запрещено."
+
+    status=$(pct status "$CTID" | awk '{print $2}')
+    protection=$(ct_config_value protection)
+
+    log "Удаление LXC $CTID $CT_HOSTNAME"
+
+    if [[ "$status" == "running" ]]; then
+        pct stop "$CTID"
+    fi
+
+    if [[ "$protection" == "1" ]]; then
+        pct set "$CTID" --protection 0
+    fi
+
+    pct destroy "$CTID" --purge 1
+    ok "LXC $CTID удалён"
+}
+
+managed_pool_exists() {
+    pvesh get "/pools/$MANAGED_POOL" --output-format json >/dev/null 2>&1
+}
+
+remove_managed_pool_if_empty() {
+    local json members remaining_acls
+
+    if ! managed_pool_exists; then
+        ok "Pool $MANAGED_POOL уже отсутствует"
+        return
+    fi
+
+    json=$(pvesh get "/pools/$MANAGED_POOL" --output-format json)
+    members=$(
+        perl -MJSON::PP -0777 -e '
+            my $row = decode_json(<STDIN>);
+            print scalar(@{ $row->{members} // [] });
+        ' <<<"$json"
+    )
+
+    if ((members > 0)); then
+        warn "Pool $MANAGED_POOL не пуст и сохранён"
+        return
+    fi
+
+    remaining_acls=$(
+        pveum acl list --output-format json \
+            | perl -MJSON::PP -0777 -e '
+                my $path = shift;
+                my $rows = decode_json(<STDIN>);
+                my $count = grep { (($_->{path} // q{}) eq $path) } @$rows;
+                print $count;
+            ' "/pool/$MANAGED_POOL"
+    )
+
+    if ((remaining_acls > 0)); then
+        warn "Pool $MANAGED_POOL имеет сторонние ACL и сохранён"
+        return
+    fi
+
+    pveum pool delete "$MANAGED_POOL"
+    ok "Пустой pool $MANAGED_POOL удалён"
+}
+
+remove_owned_template() {
+    local volume
+
+    if [[ ! -s "$HOST_TEMPLATE_MARKER" ]]; then
+        info "Debian template не отмечен как скачанный bootstrap — сохранён"
+        return
+    fi
+
+    volume=$(head -n1 "$HOST_TEMPLATE_MARKER")
+
+    if [[ ! "$volume" =~ ^local:vztmpl/debian-13-standard_.*_amd64\.tar\.(zst|gz)$ ]]; then
+        warn "Некорректная метка Debian template: $volume"
+        return
+    fi
+
+    if pveam list "$TEMPLATE_STORAGE" 2>/dev/null \
+        | awk -v volume="$volume" '$1 == volume { found=1 } END { exit(found ? 0 : 1) }'; then
+        pveam remove "$volume"
+        ok "Временный Debian template bootstrap удалён: $volume"
+    fi
+
+    rm -f -- "$HOST_TEMPLATE_MARKER"
+}
+
+remove_bootstrap() {
+    local full=$1
+
+    remove_infra_deployer_ct
+    remove_api_token_access
+    remove_managed_pool_if_empty
+    remove_owned_template
+
+    if ((full)); then
+        log "Полное удаление bootstrap-состояния"
+        rm -rf -- "$HOST_BOOTSTRAP_DIR"
+        ok "Постоянное bootstrap-состояние на PVE удалено"
+    else
+        ok "Мягкое удаление завершено; GitHub Deploy Key сохранён"
+    fi
+}
+ensure_infra_deployer_ct() {
     local template_ref=""
 
     if assert_owned_ct; then
@@ -634,7 +804,8 @@ ensure_infra_manager_ct() {
     [[ "$MODE" != "check" ]] || die "LXC $CTID отсутствует"
 
     template_ref=$(ensure_debian13_template)
-    create_infra_manager "$template_ref"
+    create_infra_deployer "$template_ref"
+    remove_owned_template
 }
 
 report_success() {
@@ -651,26 +822,35 @@ main() {
 
     acquire_lock
 
+    if [[ "$MODE" == "remove" ]]; then
+        remove_bootstrap 0
+        return
+    fi
+
+    if [[ "$MODE" == "purge" ]]; then
+        remove_bootstrap 1
+        return
+    fi
 
     host_preflight
-    ensure_infra_manager_ct
+    ensure_infra_deployer_ct
     verify_ct_contract
     ensure_ct_running
     wait_ct_network
 
     if [[ "$MODE" == "check" ]]; then
-        verify_infra_manager
+        verify_infra_deployer
         return
     fi
 
     ensure_host_github_key
-    prepare_infra_manager_os
+    prepare_infra_deployer_os
     push_github_key_to_ct
     ensure_private_repo_access
     checkout_private_project
     configure_pve_access
-    configure_infra_manager
-    verify_infra_manager
+    configure_infra_deployer
+    verify_infra_deployer
 
     report_success
 }
