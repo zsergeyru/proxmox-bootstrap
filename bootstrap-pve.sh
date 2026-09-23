@@ -595,7 +595,7 @@ configure_pve_access() {
     ok "Ограниченный доступ 910 к PVE подготовлен"
 }
 
-configure_infra_deployer() {
+configure_infra_manager() {
     local setup="$CT_PROJECT_DIR/$PRIVATE_SETUP_PATH"
     local recover_flag=0
 
@@ -619,7 +619,7 @@ configure_infra_deployer() {
     ok "Внутренняя настройка 910 завершена"
 }
 
-verify_infra_deployer() {
+verify_infra_manager() {
     local status
 
     assert_owned_ct || die "LXC $CTID отсутствует"
@@ -839,7 +839,7 @@ main() {
     wait_ct_network
 
     if [[ "$MODE" == "check" ]]; then
-        verify_infra_deployer
+        verify_infra_manager
         return
     fi
 
@@ -849,8 +849,8 @@ main() {
     ensure_private_repo_access
     checkout_private_project
     configure_pve_access
-    configure_infra_deployer
-    verify_infra_deployer
+    configure_infra_manager
+    verify_infra_manager
 
     report_success
 }
