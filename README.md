@@ -1,13 +1,13 @@
 # Proxmox Bootstrap
 
-Публичный bootstrap для первоначального развёртывания и обслуживания `910 infra-deployer` на Proxmox VE.
+Публичный bootstrap для первоначального развёртывания и обслуживания `910 infra-manager` на Proxmox VE.
 
 ## Быстрый запуск
 
 Обычная установка или повторное применение без параметров — сразу из GitHub:
 
 ~~~bash
-curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/main/bootstrap-pve.sh | bash
+curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/rename-infra-manager/bootstrap-pve.sh | bash
 ~~~
 
 ## Запуск с параметрами
@@ -15,7 +15,7 @@ curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/main/bo
 Если нужны `--help`, проверка, восстановление, удаление или другие параметры, сначала скачайте сценарий:
 
 ~~~bash
-curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/main/bootstrap-pve.sh -o bootstrap-pve.sh
+curl -fsSL https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/rename-infra-manager/bootstrap-pve.sh -o bootstrap-pve.sh
 chmod +x bootstrap-pve.sh
 ~~~
 
