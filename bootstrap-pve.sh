@@ -460,12 +460,11 @@ ensure_host_github_key() {
     install -d -o root -g root -m 0700 "$HOST_BOOTSTRAP_DIR"
 
     if [[ -s "$HOST_GITHUB_KEY" ]]; then
-        ssh-keygen -y -f "$HOST_GITHUB_KEY" >/dev/null 2>&1 \
+        local public_key
+        public_key="$(ssh-keygen -y -f "$HOST_GITHUB_KEY" 2>/dev/null)" \
             || die "Повреждён постоянный GitHub Deploy Key: $HOST_GITHUB_KEY"
 
-        if [[ ! -s "$HOST_GITHUB_PUB" ]]; then
-            ssh-keygen -y -f "$HOST_GITHUB_KEY" >"$HOST_GITHUB_PUB"
-        fi
+        printf '%s %s\n' "$public_key" 'infra-manager-readonly-zsergeyru-proxmox' >"$HOST_GITHUB_PUB"
 
         chmod 0600 "$HOST_GITHUB_KEY"
         chmod 0644 "$HOST_GITHUB_PUB"
