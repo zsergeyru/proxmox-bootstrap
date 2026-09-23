@@ -377,7 +377,7 @@ build_net0() {
     fi
 }
 
-create_infra_deployer() {
+create_infra_manager() {
     local template_ref=$1 net0 create_log
     net0=$(build_net0)
     create_log=$(mktemp /tmp/proxmox-bootstrap-create.XXXXXX)
@@ -483,7 +483,7 @@ ensure_host_github_key() {
     ok "GitHub Deploy Key создан и сохранён на PVE"
 }
 
-prepare_infra_deployer_os() {
+prepare_infra_manager_os() {
     log "Минимальная подготовка Debian внутри LXC $CTID"
 
     init_ct_log
@@ -602,7 +602,7 @@ configure_pve_access() {
     ok "Ограниченный доступ 910 к PVE подготовлен"
 }
 
-configure_infra_deployer() {
+configure_infra_manager() {
     local setup="$CT_PROJECT_DIR/$PRIVATE_SETUP_PATH"
     local recover_flag=0
 
@@ -626,7 +626,7 @@ configure_infra_deployer() {
     ok "Внутренняя настройка 910 завершена"
 }
 
-verify_infra_deployer() {
+verify_infra_manager() {
     local status
 
     assert_owned_ct || die "LXC $CTID отсутствует"
@@ -683,7 +683,7 @@ remove_api_token_access() {
     fi
 }
 
-remove_infra_deployer_ct() {
+remove_infra_manager_ct() {
     local status lock protection
 
     vm_exists && die "VMID $CTID занят виртуальной машиной. Удаление запрещено."
@@ -787,7 +787,7 @@ remove_owned_template() {
 remove_bootstrap() {
     local full=$1
 
-    remove_infra_deployer_ct
+    remove_infra_manager_ct
     remove_api_token_access
     remove_managed_pool_if_empty
     remove_owned_template
@@ -800,7 +800,7 @@ remove_bootstrap() {
         ok "Мягкое удаление завершено; GitHub Deploy Key сохранён"
     fi
 }
-ensure_infra_deployer_ct() {
+ensure_infra_manager_ct() {
     local template_ref=""
 
     if assert_owned_ct; then
@@ -811,7 +811,7 @@ ensure_infra_deployer_ct() {
     [[ "$MODE" != "check" ]] || die "LXC $CTID отсутствует"
 
     template_ref=$(ensure_debian13_template)
-    create_infra_deployer "$template_ref"
+    create_infra_manager "$template_ref"
     remove_owned_template
 }
 
@@ -840,24 +840,24 @@ main() {
     fi
 
     host_preflight
-    ensure_infra_deployer_ct
+    ensure_infra_manager_ct
     verify_ct_contract
     ensure_ct_running
     wait_ct_network
 
     if [[ "$MODE" == "check" ]]; then
-        verify_infra_deployer
+        verify_infra_manager
         return
     fi
 
     ensure_host_github_key
-    prepare_infra_deployer_os
+    prepare_infra_manager_os
     push_github_key_to_ct
     ensure_private_repo_access
     checkout_private_project
     configure_pve_access
-    configure_infra_deployer
-    verify_infra_deployer
+    configure_infra_manager
+    verify_infra_manager
 
     report_success
 }

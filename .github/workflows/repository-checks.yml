@@ -61,15 +61,15 @@ jobs:
           fi
 
           grep -q '^main() {' bootstrap-pve.sh
-          grep -q 'ensure_infra_deployer_ct' bootstrap-pve.sh
+          grep -q 'ensure_infra_manager_ct' bootstrap-pve.sh
           grep -q '^verify_ct_contract() {' bootstrap-pve.sh
           grep -q 'verify_ct_contract' bootstrap-pve.sh
           grep -q '/usr/local/sbin/infra-manager-status --full' bootstrap-pve.sh
           grep -q 'ensure_host_github_key' bootstrap-pve.sh
           grep -q 'checkout_private_project' bootstrap-pve.sh
           grep -q 'configure_pve_access' bootstrap-pve.sh
-          grep -q 'configure_infra_deployer' bootstrap-pve.sh
-          grep -q 'verify_infra_deployer' bootstrap-pve.sh
+          grep -q 'configure_infra_manager' bootstrap-pve.sh
+          grep -q 'verify_infra_manager' bootstrap-pve.sh
           grep -q -- '--remove' bootstrap-pve.sh
           grep -q -- '--purge' bootstrap-pve.sh
           grep -q 'remove_bootstrap 0' bootstrap-pve.sh
