@@ -325,9 +325,10 @@ verify_infra_manager_handoff() {
     infra_exec test -s /usr/local/share/ca-certificates/pve-root-ca.crt         || die "В 910 отсутствует PVE CA"
     infra_exec test -s "$INFRA_GITHUB_KEY"         || die "В 910 отсутствует GitHub Deploy Key"
     infra_exec test -d "$INFRA_PROJECT_DIR/.git"         || die "В 910 отсутствует рабочая копия проекта"
-    infra_exec test -s "$INFRA_PROJECT_DIR/scripts/infra-manager/setup.sh"         || die "В 910 отсутствует setup.sh"
+    infra_exec test -s "$INFRA_PROJECT_DIR/infrastructure/guests/910-infra-manager/provision.yaml"         || die "В 910 отсутствует provision.yaml"
+    infra_exec test -s "$INFRA_PROJECT_DIR/automation/ansible/playbooks/configure-guest.yml"         || die "В 910 отсутствует общий Ansible playbook"
 
-    ok "Данные для штатной настройки 910 переданы"
+    ok "Данные для общего Ansible-развёртывания 910 переданы"
 }
 
 handoff_infra_manager() {
