@@ -94,6 +94,8 @@ jobs:
           grep -q 'prepare_infra_manager_project_access' bootstrap-runner-990.sh
           grep -q 'checkout_infra_manager_project' bootstrap-runner-990.sh
           grep -q 'verify_infra_manager_handoff' bootstrap-runner-990.sh
+          grep -q 'verify_infra_manager_ready' bootstrap-runner-990.sh
+          grep -q '/usr/local/sbin/infra-manager-status --full' bootstrap-runner-990.sh
           if grep -Eq 'scripts/infra-manager/setup\.sh|python3[[:space:]]+-m[[:space:]]+infra_manager[[:space:]]+setup|infra_manager[[:space:]]+setup' bootstrap-runner-990.sh; then
             echo "910 must be configured only through the common Ansible path"
             exit 1
