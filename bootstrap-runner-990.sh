@@ -224,6 +224,11 @@ verify_runtime() {
     ok "OpenTofu и Ansible внутри 990 готовы"
 }
 
+deploy_infra_manager() {
+    ct_exec env INFRA_PROJECT_BRANCH="$PROJECT_BRANCH"         bash "$PROJECT_DIR/scripts/bootstrap-runner/deploy-910.sh" "$PROJECT_DIR"
+    ok "LXC 910 создан и базово настроен через 990"
+}
+
 check_ready() {
     verify_ct_contract
     [[ "$(pct status "$CTID" | awk '{print $2}')" == "running" ]] || die "LXC $CTID не запущен"
@@ -268,6 +273,7 @@ apply() {
     checkout_project
     run_private_host_access
     prepare_runtime
+    deploy_infra_manager
     check_ready
 }
 
