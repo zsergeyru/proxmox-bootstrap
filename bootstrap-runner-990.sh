@@ -23,6 +23,15 @@ HOST_GITHUB_PUB="$HOST_GITHUB_KEY.pub"
 CT_GITHUB_KEY="/root/.ssh/github_proxmox_repo_ed25519"
 CT_GITHUB_CONFIG="/root/.ssh/github_config"
 CT_GITHUB_KNOWN_HOSTS="/root/.ssh/github_known_hosts"
+
+INFRA_CTID=910
+INFRA_HOSTNAME="infra-manager"
+INFRA_PROJECT_DIR="/var/lib/infra-manager/bootstrap-repo"
+INFRA_GITHUB_KEY="/root/.ssh/github_proxmox_repo_ed25519"
+INFRA_GITHUB_CONFIG="/root/.ssh/github_config"
+INFRA_GITHUB_KNOWN_HOSTS="/root/.ssh/github_known_hosts"
+INFRA_STAGING_SECRET="/root/.infra-manager-bootstrap/pve-api.env"
+
 MODE="apply"
 
 die() { printf 'ОШИБКА: %s\n' "$*" >&2; exit 1; }
@@ -229,6 +238,105 @@ deploy_infra_manager() {
     ok "LXC 910 создан и базово настроен через 990"
 }
 
+infra_exec() {
+    pct exec "$INFRA_CTID" -- "$@"
+}
+
+verify_infra_manager_object() {
+    local config status
+
+    pct config "$INFRA_CTID" >/dev/null 2>&1         || die "LXC $INFRA_CTID отсутствует после deploy-guest"
+
+    config="$(pct config "$INFRA_CTID")"
+    grep -Fxq "hostname: $INFRA_HOSTNAME" <<<"$config"         || die "VMID $INFRA_CTID не является ожидаемым infra-manager"
+
+    status="$(pct status "$INFRA_CTID" | awk '{print $2}')"
+    [[ "$status" == "running" ]]         || die "LXC $INFRA_CTID должен быть запущен перед передачей управления"
+}
+
+prepare_infra_manager_pve_access() {
+    local helper
+
+    verify_infra_manager_object
+
+    helper="$(mktemp /run/infra-manager-pve-access.XXXXXX)"
+    pct pull "$CTID" "$PROJECT_DIR/scripts/infra-manager/pve-bootstrap-access.sh" "$helper"
+    chmod 0700 "$helper"
+
+    INFRA_MANAGER_CTID="$INFRA_CTID"     INFRA_MANAGER_MODE=apply     INFRA_MANAGER_SECRET_FILE="$INFRA_STAGING_SECRET"         "$helper"
+
+    rm -f "$helper"
+
+    infra_exec test -s "$INFRA_STAGING_SECRET"         || die "Постоянный PVE API credential не передан в 910"
+
+    ok "Постоянный PVE API-доступ 910 подготовлен"
+}
+
+prepare_infra_manager_project_access() {
+    local known_hosts
+
+    verify_infra_manager_object
+    infra_exec install -d -m 0700 /root/.ssh
+
+    pct push "$INFRA_CTID" "$HOST_GITHUB_KEY" "$INFRA_GITHUB_KEY"         --user 0 --group 0 --perms 0600
+
+    known_hosts="$(mktemp /run/infra-manager-known-hosts.XXXXXX)"
+    ssh-keyscan -t ed25519 github.com >"$known_hosts" 2>/dev/null
+    pct push "$INFRA_CTID" "$known_hosts" "$INFRA_GITHUB_KNOWN_HOSTS"         --user 0 --group 0 --perms 0644
+    rm -f "$known_hosts"
+
+    infra_exec sh -c 'cat >"$1" <<EOF
+Host github.com
+    HostName github.com
+    User git
+    IdentityFile /root/.ssh/github_proxmox_repo_ed25519
+    IdentitiesOnly yes
+    UserKnownHostsFile /root/.ssh/github_known_hosts
+    StrictHostKeyChecking yes
+    BatchMode yes
+    ConnectTimeout 10
+EOF
+chmod 0600 "$1"
+' sh "$INFRA_GITHUB_CONFIG"
+
+    ok "Read-only GitHub-доступ передан в 910"
+}
+
+checkout_infra_manager_project() {
+    local git_ssh="ssh -F $INFRA_GITHUB_CONFIG"
+
+    if infra_exec test -d "$INFRA_PROJECT_DIR/.git"; then
+        infra_exec env GIT_SSH_COMMAND="$git_ssh"             git -C "$INFRA_PROJECT_DIR" fetch --depth 1 origin "$PROJECT_BRANCH"
+        infra_exec git -C "$INFRA_PROJECT_DIR" reset --hard FETCH_HEAD
+        infra_exec git -C "$INFRA_PROJECT_DIR" clean -ffdx
+    else
+        infra_exec rm -rf "$INFRA_PROJECT_DIR"
+        infra_exec install -d -m 0755 "$(dirname "$INFRA_PROJECT_DIR")"
+        infra_exec env GIT_SSH_COMMAND="$git_ssh"             git clone --depth 1 --branch "$PROJECT_BRANCH"             "$PROJECT_REPO" "$INFRA_PROJECT_DIR"
+    fi
+
+    ok "Проект передан в постоянный LXC 910"
+}
+
+verify_infra_manager_handoff() {
+    verify_infra_manager_object
+
+    infra_exec test -s "$INFRA_STAGING_SECRET"         || die "В 910 отсутствует staging PVE API credential"
+    infra_exec test -s /usr/local/share/ca-certificates/pve-root-ca.crt         || die "В 910 отсутствует PVE CA"
+    infra_exec test -s "$INFRA_GITHUB_KEY"         || die "В 910 отсутствует GitHub Deploy Key"
+    infra_exec test -d "$INFRA_PROJECT_DIR/.git"         || die "В 910 отсутствует рабочая копия проекта"
+    infra_exec test -s "$INFRA_PROJECT_DIR/scripts/infra-manager/setup.sh"         || die "В 910 отсутствует setup.sh"
+
+    ok "Данные для штатной настройки 910 переданы"
+}
+
+handoff_infra_manager() {
+    prepare_infra_manager_pve_access
+    prepare_infra_manager_project_access
+    checkout_infra_manager_project
+    verify_infra_manager_handoff
+}
+
 check_ready() {
     verify_ct_contract
     [[ "$(pct status "$CTID" | awk '{print $2}')" == "running" ]] || die "LXC $CTID не запущен"
@@ -274,6 +382,7 @@ apply() {
     run_private_host_access
     prepare_runtime
     deploy_infra_manager
+    handoff_infra_manager
     check_ready
 }
 
