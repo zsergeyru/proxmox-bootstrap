@@ -238,6 +238,11 @@ create_infra_manager_infrastructure() {
     ok "LXC 910 создан через отдельное состояние 990"
 }
 
+prepare_infra_manager_base() {
+    ct_exec env INFRA_PROJECT_BRANCH="$PROJECT_BRANCH"         bash "$PROJECT_DIR/scripts/bootstrap-runner/deploy-910.sh"         base "$PROJECT_DIR"
+    ok "Базовые пакеты 910 установлены общим Ansible"
+}
+
 provision_infra_manager() {
     ct_exec env INFRA_PROJECT_BRANCH="$PROJECT_BRANCH"         bash "$PROJECT_DIR/scripts/bootstrap-runner/deploy-910.sh"         provision "$PROJECT_DIR"
     ok "provision.yaml 910 полностью применён через общий Ansible"
@@ -388,6 +393,7 @@ apply() {
     run_private_host_access
     prepare_runtime
     create_infra_manager_infrastructure
+    prepare_infra_manager_base
     handoff_infra_manager
     provision_infra_manager
     check_ready
