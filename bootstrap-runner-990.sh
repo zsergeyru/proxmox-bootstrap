@@ -233,9 +233,14 @@ verify_runtime() {
     ok "OpenTofu и Ansible внутри 990 готовы"
 }
 
-deploy_infra_manager() {
-    ct_exec env INFRA_PROJECT_BRANCH="$PROJECT_BRANCH"         bash "$PROJECT_DIR/scripts/bootstrap-runner/deploy-910.sh" "$PROJECT_DIR"
-    ok "LXC 910 создан и базово настроен через 990"
+create_infra_manager_infrastructure() {
+    ct_exec env INFRA_PROJECT_BRANCH="$PROJECT_BRANCH"         bash "$PROJECT_DIR/scripts/bootstrap-runner/deploy-910.sh"         infrastructure "$PROJECT_DIR"
+    ok "LXC 910 создан через отдельное состояние 990"
+}
+
+provision_infra_manager() {
+    ct_exec env INFRA_PROJECT_BRANCH="$PROJECT_BRANCH"         bash "$PROJECT_DIR/scripts/bootstrap-runner/deploy-910.sh"         provision "$PROJECT_DIR"
+    ok "provision.yaml 910 полностью применён через общий Ansible"
 }
 
 infra_exec() {
@@ -382,8 +387,9 @@ apply() {
     checkout_project
     run_private_host_access
     prepare_runtime
-    deploy_infra_manager
+    create_infra_manager_infrastructure
     handoff_infra_manager
+    provision_infra_manager
     check_ready
 }
 
