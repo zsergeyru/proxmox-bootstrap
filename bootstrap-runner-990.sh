@@ -328,6 +328,13 @@ checkout_infra_manager_project() {
     ok "Проект передан в постоянный LXC 910"
 }
 
+verify_infra_manager_ready() {
+    verify_infra_manager_object
+    infra_exec test -x /usr/local/sbin/infra-manager-status         || die "В 910 отсутствует infra-manager-status после общего Ansible"
+    infra_exec env INFRA_PROJECT_BRANCH="$PROJECT_BRANCH"         /usr/local/sbin/infra-manager-status --full
+    ok "910 infra-manager готов по полному текущему контракту"
+}
+
 verify_infra_manager_handoff() {
     verify_infra_manager_object
 
@@ -396,6 +403,7 @@ apply() {
     prepare_infra_manager_base
     handoff_infra_manager
     provision_infra_manager
+    verify_infra_manager_ready
     check_ready
 }
 
