@@ -22,17 +22,19 @@ jobs:
       - name: Validate shell syntax
         run: |
           bash -n bootstrap-pve.sh
+          bash -n bootstrap-runner-990.sh
           bash -n reset-pve-test-state.sh
           bash -n reset-pve-clean-slate.sh
 
       - name: Check help
         run: |
           bash bootstrap-pve.sh --help >/dev/null
+          bash bootstrap-runner-990.sh --help >/dev/null
           bash reset-pve-test-state.sh --help >/dev/null
           bash reset-pve-clean-slate.sh --help >/dev/null
 
       - name: ShellCheck
-        run: shellcheck -S warning bootstrap-pve.sh reset-pve-test-state.sh reset-pve-clean-slate.sh
+        run: shellcheck -S warning bootstrap-pve.sh bootstrap-runner-990.sh reset-pve-test-state.sh reset-pve-clean-slate.sh
 
       - name: Check public bootstrap boundary
         run: |
@@ -76,6 +78,23 @@ jobs:
           grep -q 'remove_bootstrap 1' bootstrap-pve.sh
           grep -q 'HOST_TEMPLATE_MARKER=' bootstrap-pve.sh
           grep -q 'remove_managed_pool_if_empty' bootstrap-pve.sh
+
+      - name: Check bootstrap-runner boundary
+        run: |
+          grep -q '^CTID=990
+        run: git diff --check
+ bootstrap-runner-990.sh
+          grep -q '^CT_HOSTNAME="bootstrap-runner"
+        run: git diff --check
+ bootstrap-runner-990.sh
+          grep -q 'PROJECT_DIR="/var/lib/bootstrap-runner/project"' bootstrap-runner-990.sh
+          grep -q 'scripts/bootstrap-runner/pve-access.sh' bootstrap-runner-990.sh
+          grep -q 'scripts/bootstrap-runner/prepare-runtime.sh' bootstrap-runner-990.sh
+          grep -q 'scripts/bootstrap-runner/run-runtime.sh' bootstrap-runner-990.sh
+          if grep -Eq 'PVEVMAdmin|PVEDatastoreUser|PVESDNUser' bootstrap-runner-990.sh; then
+            echo "PVE access policy for 990 must stay in the private project"
+            exit 1
+          fi
 
       - name: Check whitespace errors
         run: git diff --check
