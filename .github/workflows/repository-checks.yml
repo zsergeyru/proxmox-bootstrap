@@ -81,12 +81,8 @@ jobs:
 
       - name: Check bootstrap-runner boundary
         run: |
-          grep -q '^CTID=990
-        run: git diff --check
- bootstrap-runner-990.sh
-          grep -q '^CT_HOSTNAME="bootstrap-runner"
-        run: git diff --check
- bootstrap-runner-990.sh
+          grep -q '^CTID=990$' bootstrap-runner-990.sh
+          grep -q '^CT_HOSTNAME="bootstrap-runner"$' bootstrap-runner-990.sh
           grep -q 'PROJECT_DIR="/var/lib/bootstrap-runner/project"' bootstrap-runner-990.sh
           grep -q 'scripts/bootstrap-runner/pve-access.sh' bootstrap-runner-990.sh
           grep -q 'scripts/bootstrap-runner/prepare-runtime.sh' bootstrap-runner-990.sh
