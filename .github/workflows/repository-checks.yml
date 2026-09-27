@@ -87,14 +87,7 @@ jobs:
           grep -q 'scripts/bootstrap-runner/pve-access.sh' bootstrap-runner-990.sh
           grep -q 'scripts/bootstrap-runner/prepare-runtime.sh' bootstrap-runner-990.sh
           grep -q 'scripts/bootstrap-runner/run-runtime.sh' bootstrap-runner-990.sh
-          grep -q '^INFRA_CTID=910          if grep -Eq 'PVEVMAdmin|PVEDatastoreUser|PVESDNUser' bootstrap-runner-990.sh; then
-            echo "PVE access policy for 990 must stay in the private project"
-            exit 1
-          fi
-
-      - name: Check whitespace errors
-        run: git diff --check
- bootstrap-runner-990.sh
+          grep -q '^INFRA_CTID=910$' bootstrap-runner-990.sh
           grep -q 'INFRA_STAGING_SECRET="/root/.infra-manager-bootstrap/pve-api.env"' bootstrap-runner-990.sh
           grep -q 'scripts/infra-manager/pve-bootstrap-access.sh' bootstrap-runner-990.sh
           grep -q 'prepare_infra_manager_pve_access' bootstrap-runner-990.sh
