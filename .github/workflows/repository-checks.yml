@@ -156,7 +156,11 @@ jobs:
 
       - name: Check public repository stays minimal
         run: |
-          expected=.github/workflows/repository-checks.yml\nREADME.md\nbootstrap-pve.py\nbootstrap-pve.sh'
+          expected="$(printf '%s\n' \
+            .github/workflows/repository-checks.yml \
+            README.md \
+            bootstrap-pve.py \
+            bootstrap-pve.sh)"
           actual="$(git ls-files | sort)"
           test "$actual" = "$expected"
 
