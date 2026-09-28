@@ -16,7 +16,7 @@ TEMPLATE_STORAGE="local"
 PROJECT_REPO="git@github.com:zsergeyru/proxmox.git"
 PROJECT_BRANCH="${PROJECT_BRANCH:-feature/bootstrap-990}"
 PROJECT_DIR="/var/lib/bootstrap-runner/project"
-PRIVATE_ENTRYPOINT="$PROJECT_DIR/scripts/bootstrap-runner/bootstrap-host.sh"
+PRIVATE_ENTRYPOINT="$PROJECT_DIR/scripts/bootstrap-runner/bootstrap-host.py"
 
 HOST_BOOTSTRAP_DIR="/root/.config/proxmox-bootstrap"
 HOST_GITHUB_KEY="$HOST_BOOTSTRAP_DIR/github_proxmox_repo_ed25519"
@@ -93,7 +93,7 @@ parse_args() {
 
 require_pve() {
     [[ $EUID -eq 0 ]] || die "сценарий должен выполняться от root на PVE"
-    for command in pct pveam pvesm ssh-keygen ssh-keyscan flock; do
+    for command in pct pveam pvesm ssh-keygen ssh-keyscan flock python3; do
         command -v "$command" >/dev/null 2>&1 || die "не найден $command"
     done
 }
@@ -333,7 +333,7 @@ run_private_bootstrap() {
         HOST_GITHUB_KEY="$HOST_GITHUB_KEY" \
         HOST_TEMPLATE_MARKER="$HOST_TEMPLATE_MARKER" \
         HOST_LOG_FILE="$HOST_LOG_FILE" \
-        bash "$helper" "${FORWARD_ARGS[@]}"
+        python3 "$helper" "${FORWARD_ARGS[@]}"
 }
 
 main() {
