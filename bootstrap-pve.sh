@@ -455,7 +455,8 @@ remove_token_acls_by_id() {
 }
 
 remove_named_token() {
-    local user=$1 token_name=$2 token_id="$user!$token_name"
+    local user=$1 token_name=$2 token_id
+    token_id="$user!$token_name"
     remove_token_acls_by_id "$token_id"
     if pveum user token list "$user" --output-format json 2>/dev/null         | perl -MJSON::PP -0777 -e '
             my $token = shift;
