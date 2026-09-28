@@ -420,7 +420,8 @@ handoff_existing_infra_manager() {
 }
 
 handoff_infra_manager() {
-    prepare_infra_manager_pve_access
+    local access_mode="${1:-apply}"
+    prepare_infra_manager_pve_access "$access_mode"
     prepare_infra_manager_project_access
     checkout_infra_manager_project
     verify_infra_manager_handoff
@@ -529,7 +530,7 @@ remove_infra_manager() {
         config="$(pct config "$INFRA_CTID")"
         grep -Fxq "hostname: $INFRA_HOSTNAME" <<<"$config"             || die "VMID $INFRA_CTID занят чужим объектом"
         remove_named_token "root@pam" "infra-manager"
-        pct set "$INFRA_CTID" -protection 0 >/dev/null
+        pct set "$INFRA_CTID" --protection 0 >/dev/null
         if [[ "$(pct status "$INFRA_CTID" | awk '{print $2}')" == "running" ]]; then
             pct stop "$INFRA_CTID"
         fi
@@ -542,9 +543,7 @@ remove_infra_manager() {
 }
 
 check_ready() {
-    [[ ! -e /proc/0 ]] || true
     infra_manager_exists || die "LXC 910 отсутствует"
-    ensure_existing_infra_manager_running
     verify_infra_manager_ready
     ct_exists && die "после успешного bootstrap временный LXC 990 не должен существовать"
     temporary_token_exists && die "после успешного bootstrap временный token 990 не должен существовать"
@@ -577,7 +576,11 @@ apply() {
     else
         create_infra_manager_infrastructure
         prepare_infra_manager_base
-        handoff_infra_manager
+        if [[ "$MODE" == "recover" ]]; then
+            handoff_infra_manager recover
+        else
+            handoff_infra_manager
+        fi
         provision_infra_manager
     fi
 
