@@ -22,19 +22,13 @@ jobs:
       - name: Validate syntax
         run: |
           bash -n bootstrap-pve.sh
-          bash -n reset-pve-test-state.sh
-          bash -n reset-pve-clean-slate.sh
           python3 -m py_compile bootstrap-pve.py
 
       - name: Check help
-        run: |
-          bash bootstrap-pve.sh --help >/dev/null || true
-          python3 bootstrap-pve.py --help >/dev/null
-          bash reset-pve-test-state.sh --help >/dev/null
-          bash reset-pve-clean-slate.sh --help >/dev/null
+        run: python3 bootstrap-pve.py --help >/dev/null
 
       - name: ShellCheck
-        run: shellcheck -S warning bootstrap-pve.sh reset-pve-test-state.sh reset-pve-clean-slate.sh
+        run: shellcheck -S warning bootstrap-pve.sh
 
       - name: Check public shell is only a Python loader
         run: |
@@ -159,6 +153,12 @@ jobs:
             echo "Bootstrap lock file must remain persistent"
             exit 1
           fi
+
+      - name: Check public repository stays minimal
+        run: |
+          expected=.github/workflows/repository-checks.yml\nREADME.md\nbootstrap-pve.py\nbootstrap-pve.sh'
+          actual="$(find . -type f -not -path './.git/*' -printf '%P\n' | sort)"
+          test "$actual" = "$expected"
 
       - name: Check whitespace errors
         run: git diff --check
