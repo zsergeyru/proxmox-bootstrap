@@ -44,6 +44,11 @@ class BootstrapError(RuntimeError):
     pass
 
 
+def version_sort_key(value: str) -> tuple[object, ...]:
+    parts = re.split(r"(\d+)", value)
+    return tuple(int(part) if part.isdigit() else part for part in parts)
+
+
 class PublicBootstrap:
     def __init__(self, project_branch: str, forward_args: list[str]) -> None:
         self.project_branch = project_branch
@@ -275,7 +280,7 @@ class PublicBootstrap:
             ref = line.split()[0]
             if pattern.match(ref):
                 matches.append(ref)
-        return sorted(matches)[-1] if matches else None
+        return max(matches, key=version_sort_key) if matches else None
 
     def ensure_template(self) -> str:
         template = self.find_local_template()
@@ -301,7 +306,7 @@ class PublicBootstrap:
         if not names:
             self.fail("не найден Debian 13 LXC-шаблон")
 
-        name = sorted(names)[-1]
+        name = max(names, key=version_sort_key)
         self.run("pveam", "download", TEMPLATE_STORAGE, name, quiet=True)
         HOST_BOOTSTRAP_DIR.mkdir(parents=True, exist_ok=True)
         ref = f"{TEMPLATE_STORAGE}:vztmpl/{name}"
