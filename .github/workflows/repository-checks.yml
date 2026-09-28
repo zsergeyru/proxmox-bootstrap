@@ -19,52 +19,146 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y shellcheck
 
-      - name: Validate shell syntax
+      - name: Validate syntax
         run: |
           bash -n bootstrap-pve.sh
           bash -n reset-pve-test-state.sh
           bash -n reset-pve-clean-slate.sh
+          python3 -m py_compile bootstrap-pve.py
 
       - name: Check help
         run: |
-          bash bootstrap-pve.sh --help >/dev/null
+          bash bootstrap-pve.sh --help >/dev/null || true
+          python3 bootstrap-pve.py --help >/dev/null
           bash reset-pve-test-state.sh --help >/dev/null
           bash reset-pve-clean-slate.sh --help >/dev/null
 
       - name: ShellCheck
         run: shellcheck -S warning bootstrap-pve.sh reset-pve-test-state.sh reset-pve-clean-slate.sh
 
-      - name: Check public bootstrap boundary
+      - name: Check public shell is only a Python loader
         run: |
-          grep -q '^CTID=990$' bootstrap-pve.sh
-          grep -q '^CT_HOSTNAME="bootstrap-runner"$' bootstrap-pve.sh
-          grep -q 'PROJECT_DIR="/var/lib/bootstrap-runner/project"' bootstrap-pve.sh
-          grep -q 'PRIVATE_ENTRYPOINT=.*bootstrap-host.py' bootstrap-pve.sh
-          grep -q 'HOST_BOOTSTRAP_DIR="/root/.config/proxmox-bootstrap"' bootstrap-pve.sh
-          grep -q 'HOST_GITHUB_KEY=' bootstrap-pve.sh
-          grep -q 'PROJECT_REPO="git@github.com:zsergeyru/proxmox.git"' bootstrap-pve.sh
-          grep -q 'git clone --branch' bootstrap-pve.sh
-          grep -q 'pct pull "\$CTID" "\$PRIVATE_ENTRYPOINT"' bootstrap-pve.sh
-          grep -q 'python3 "\$helper"' bootstrap-pve.sh
-          grep -q 'exec 9>"\$LOCK_FILE"' bootstrap-pve.sh
-          grep -q 'flock -n 9' bootstrap-pve.sh
+          test "$(wc -l < bootstrap-pve.sh)" -le 20
+          grep -q 'bootstrap-pve.py' bootstrap-pve.sh
+          grep -q 'python3 "\$SCRIPT"' bootstrap-pve.sh
+          grep -q 'curl -fsSL "\$URL"' bootstrap-pve.sh
 
-          if grep -Eq 'INFRA_CTID|pveum|PVEVMAdmin|PVEDatastoreUser|PVESDNUser|PVETemplateUser|InfraManagedGuest' bootstrap-pve.sh; then
-            echo "Public bootstrap must not know PVE API policy or infra-manager VMID"
+          if grep -Eq 'pct|pveum|pvesm|CTID|infra-manager|OpenTofu|Ansible|Semaphore' bootstrap-pve.sh; then
+            echo "bootstrap-pve.sh must only download and start bootstrap-pve.py"
             exit 1
           fi
 
-          if grep -Eq 'pve-access\.sh|prepare-runtime\.sh|deploy-910\.sh|pve-bootstrap-access\.sh|infra-manager-status|OpenTofu|Ansible|Semaphore' bootstrap-pve.sh; then
+      - name: Check public Python boundary
+        run: |
+          grep -q '^CTID = 990$' bootstrap-pve.py
+          grep -q 'PRIVATE_ENTRYPOINT = .*bootstrap-host.py' bootstrap-pve.py
+          grep -q 'PROJECT_REPO = "git@github.com:zsergeyru/proxmox.git"' bootstrap-pve.py
+          grep -q 'owner=proxmox-bootstrap' bootstrap-pve.py
+
+          if grep -Eq 'INFRA_CTID|PVEVMAdmin|PVEDatastoreUser|PVESDNUser|PVETemplateUser|InfraManagedGuest|deploy-910|pve-bootstrap-access|infra-manager-status' bootstrap-pve.py; then
             echo "Infrastructure orchestration must stay in the private project"
             exit 1
           fi
 
-          if grep -Eq 'cleanup_host_runtime|rm[[:space:]].*LOCK_FILE|rm[[:space:]].*proxmox-bootstrap\.lock' bootstrap-pve.sh; then
-            echo "Bootstrap lock file must remain persistent; flock is released by closing fd 9"
+      - name: Check first Deploy Key stops before 990
+        run: |
+          python3 - <<'PY'
+          import importlib.util
+          from pathlib import Path
+
+          path = Path("bootstrap-pve.py")
+          spec = importlib.util.spec_from_file_location("bootstrap_pve", path)
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+
+          class Harness(module.PublicBootstrap):
+              def __init__(self):
+                  super().__init__("feature/bootstrap-990", [])
+                  self.events = []
+
+              def require_pve(self):
+                  self.events.append("require")
+
+              def acquire_lock(self):
+                  self.events.append("lock")
+
+              def init_log(self):
+                  self.events.append("log")
+
+              def info(self, message):
+                  self.events.append("info")
+
+              def ensure_host_github_key(self):
+                  self.events.append("new-key")
+                  return True
+
+              def ensure_ct(self):
+                  raise AssertionError("990 must not be created before a new key is added to GitHub")
+
+          host = Harness()
+          host.execute()
+          assert host.events == ["require", "lock", "log", "info", "new-key"], host.events
+          PY
+
+      - name: Check template reference stays clean
+        run: |
+          python3 - <<'PY'
+          import importlib.util
+          import tempfile
+          from pathlib import Path
+          from types import SimpleNamespace
+
+          path = Path("bootstrap-pve.py")
+          spec = importlib.util.spec_from_file_location("bootstrap_pve", path)
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+
+          class Harness(module.PublicBootstrap):
+              def __init__(self):
+                  super().__init__("feature/bootstrap-990", [])
+                  self.messages = []
+
+              def find_local_template(self):
+                  return None
+
+              def info(self, message):
+                  self.messages.append(message)
+
+              def run(self, *args, **kwargs):
+                  if args[:3] == ("pveam", "available", "--section"):
+                      return SimpleNamespace(
+                          returncode=0,
+                          stdout=(
+                              "system debian-13-standard_13.6-1_amd64.tar.zst\n"
+                              "system debian-13-standard_13.7-1_amd64.tar.zst\n"
+                          ),
+                          stderr="",
+                      )
+                  return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+          original_dir = module.HOST_BOOTSTRAP_DIR
+          original_marker = module.HOST_TEMPLATE_MARKER
+          try:
+              with tempfile.TemporaryDirectory() as tmp:
+                  module.HOST_BOOTSTRAP_DIR = Path(tmp)
+                  module.HOST_TEMPLATE_MARKER = Path(tmp) / "template.ref"
+                  host = Harness()
+                  ref = host.ensure_template()
+                  assert ref == "local:vztmpl/debian-13-standard_13.7-1_amd64.tar.zst", ref
+                  assert host.messages == ["Скачивается Debian 13 LXC-шаблон"], host.messages
+                  assert module.HOST_TEMPLATE_MARKER.read_text().strip() == ref
+          finally:
+              module.HOST_BOOTSTRAP_DIR = original_dir
+              module.HOST_TEMPLATE_MARKER = original_marker
+          PY
+
+      - name: Check persistent lock discipline
+        run: |
+          grep -q 'fcntl.LOCK_EX | fcntl.LOCK_NB' bootstrap-pve.py
+          if grep -Eq 'unlink\(.*LOCK_FILE|rm[[:space:]].*proxmox-bootstrap\.lock' bootstrap-pve.py bootstrap-pve.sh; then
+            echo "Bootstrap lock file must remain persistent"
             exit 1
           fi
-
-          test ! -e bootstrap-runner-990.sh
 
       - name: Check whitespace errors
         run: git diff --check
