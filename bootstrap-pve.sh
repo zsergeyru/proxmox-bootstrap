@@ -395,7 +395,9 @@ verify_infra_manager_ready() {
 verify_infra_manager_handoff() {
     verify_infra_manager_object
 
-    infra_exec test -s "$INFRA_STAGING_SECRET"         || die "В 910 отсутствует staging PVE API credential"
+    if ! infra_exec test -s "$INFRA_STAGING_SECRET"         && ! infra_exec test -s /etc/infra-manager/secrets/pve-api.env; then
+        die "В 910 отсутствует временный и постоянный PVE API credential"
+    fi
     infra_exec test -s /usr/local/share/ca-certificates/pve-root-ca.crt         || die "В 910 отсутствует PVE CA"
     infra_exec test -s "$INFRA_GITHUB_KEY"         || die "В 910 отсутствует GitHub Deploy Key"
     infra_exec test -d "$INFRA_PROJECT_DIR/.git"         || die "В 910 отсутствует рабочая копия проекта"
@@ -562,12 +564,27 @@ prepare_runner() {
 }
 
 apply() {
-    local existed=0
+    local existed=0 runner_owns_910=0
     infra_manager_exists && existed=1
 
     prepare_runner
 
-    if ((existed)); then
+    if ct_exec test -s /var/lib/bootstrap-runner/opentofu/state/proxmox.tfstate; then
+        runner_owns_910=1
+    fi
+
+    if ((existed && runner_owns_910)); then
+        info "Найден незавершённый первоначальный контур; продолжается его state"
+        ensure_existing_infra_manager_running
+        create_infra_manager_infrastructure
+        prepare_infra_manager_base
+        if [[ "$MODE" == "recover" ]]; then
+            handoff_infra_manager recover
+        else
+            handoff_infra_manager
+        fi
+        provision_infra_manager
+    elif ((existed)); then
         ensure_existing_infra_manager_running
         if [[ "$MODE" == "recover" ]]; then
             prepare_infra_manager_pve_access recover
