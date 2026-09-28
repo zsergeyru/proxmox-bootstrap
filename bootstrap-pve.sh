@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-REF="${PROXMOX_BOOTSTRAP_REF:-feature/bootstrap-990}"
+REF="${PROXMOX_BOOTSTRAP_REF:-main}"
 URL="https://raw.githubusercontent.com/zsergeyru/proxmox-bootstrap/${REF}/bootstrap-pve.py"
 
 command -v curl >/dev/null 2>&1 || { echo "ОШИБКА: не найден curl" >&2; exit 1; }
