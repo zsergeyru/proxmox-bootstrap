@@ -39,6 +39,9 @@ CT_GITHUB_KEY = Path("/root/.ssh/github_proxmox_repo_ed25519")
 CT_GITHUB_CONFIG = Path("/root/.ssh/github_config")
 CT_GITHUB_KNOWN_HOSTS = Path("/root/.ssh/github_known_hosts")
 
+# Official github.com Ed25519 host key published by GitHub.
+GITHUB_ED25519_KNOWN_HOST = "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
+
 
 class BootstrapError(RuntimeError):
     pass
@@ -134,7 +137,6 @@ class PublicBootstrap:
             "pveam",
             "pvesm",
             "ssh-keygen",
-            "ssh-keyscan",
             "python3",
         ):
             if shutil.which(command) is None:
@@ -399,16 +401,7 @@ class PublicBootstrap:
         os.close(fd)
         known_hosts = Path(name)
         try:
-            scan = self.run(
-                "ssh-keyscan",
-                "-t",
-                "ed25519",
-                "github.com",
-                capture=True,
-            )
-            if not scan.stdout.strip():
-                self.fail("ssh-keyscan не вернул ключ github.com")
-            known_hosts.write_text(scan.stdout)
+            known_hosts.write_text(f"{GITHUB_ED25519_KNOWN_HOST}\n")
             self.push_file(known_hosts, CT_GITHUB_KNOWN_HOSTS, "0644")
         finally:
             known_hosts.unlink(missing_ok=True)
