@@ -129,8 +129,8 @@ jobs:
                       return SimpleNamespace(
                           returncode=0,
                           stdout=(
-                              "system debian-13-standard_13.6-1_amd64.tar.zst\n"
-                              "system debian-13-standard_13.7-1_amd64.tar.zst\n"
+                              "system debian-13-standard_13.9-1_amd64.tar.zst\n"
+                              "system debian-13-standard_13.10-1_amd64.tar.zst\n"
                           ),
                           stderr="",
                       )
@@ -144,7 +144,7 @@ jobs:
                   module.HOST_TEMPLATE_MARKER = Path(tmp) / "template.ref"
                   host = Harness()
                   ref = host.ensure_template()
-                  assert ref == "local:vztmpl/debian-13-standard_13.7-1_amd64.tar.zst", ref
+                  assert ref == "local:vztmpl/debian-13-standard_13.10-1_amd64.tar.zst", ref
                   assert host.messages == ["Скачивается Debian 13 LXC-шаблон"], host.messages
                   assert module.HOST_TEMPLATE_MARKER.read_text().strip() == ref
           finally:
