@@ -97,7 +97,7 @@ parse_args() {
 
 require_pve() {
     [[ $EUID -eq 0 ]] || die "сценарий должен выполняться от root на PVE"
-    for command in pct pveam pvesm pveum pvesh ssh-keygen ssh-keyscan git perl flock; do
+    for command in pct pveam pvesm pveum pvesh ssh-keygen ssh-keyscan perl flock; do
         command -v "$command" >/dev/null 2>&1 || die "не найден $command"
     done
 }
