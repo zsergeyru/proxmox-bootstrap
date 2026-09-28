@@ -14,6 +14,8 @@ from pathlib import Path
 
 VERSION = "6.0.0-dev1"
 
+# Параметры временного LXC 990. Этот контейнер существует только на время
+# получения закрытого проекта и выполнения закрытого bootstrap.
 CTID = 990
 CT_HOSTNAME = "bootstrap-runner"
 CT_CORES = 2
@@ -24,10 +26,13 @@ CT_STORAGE = "local-lvm"
 CT_BRIDGE = "vmbr0"
 TEMPLATE_STORAGE = "local"
 
+# Закрытый проект содержит всю оркестрацию 910 и политику PVE-доступа.
 PROJECT_REPO = "git@github.com:zsergeyru/proxmox.git"
 PROJECT_DIR = Path("/var/lib/bootstrap-runner/project")
 PRIVATE_ENTRYPOINT = PROJECT_DIR / "scripts/bootstrap-runner/bootstrap-host.py"
 
+# На PVE постоянно сохраняется только read-only Deploy Key и служебный маркер
+# скачанного шаблона. Остальные данные bootstrap должны быть временными.
 HOST_BOOTSTRAP_DIR = Path("/root/.config/proxmox-bootstrap")
 HOST_GITHUB_KEY = HOST_BOOTSTRAP_DIR / "github_proxmox_repo_ed25519"
 HOST_GITHUB_PUB = Path(f"{HOST_GITHUB_KEY}.pub")
@@ -39,7 +44,8 @@ CT_GITHUB_KEY = Path("/root/.ssh/github_proxmox_repo_ed25519")
 CT_GITHUB_CONFIG = Path("/root/.ssh/github_config")
 CT_GITHUB_KNOWN_HOSTS = Path("/root/.ssh/github_known_hosts")
 
-# Official github.com Ed25519 host key published by GitHub.
+# Закреплённый официальный Ed25519 host key GitHub не позволяет принимать
+# произвольный ключ из сети при первом SSH-подключении.
 GITHUB_ED25519_KNOWN_HOST = "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
 
 
@@ -48,6 +54,7 @@ class BootstrapError(RuntimeError):
 
 
 def version_sort_key(value: str) -> tuple[object, ...]:
+    """Сортировать имена версий естественно: 13.10 должно быть новее 13.9."""
     parts = re.split(r"(\d+)", value)
     return tuple(int(part) if part.isdigit() else part for part in parts)
 
@@ -90,6 +97,8 @@ class PublicBootstrap:
             command_env.update(env)
 
         if quiet:
+            # Служебный вывод не засоряет консоль, но полностью сохраняется
+            # для диагностики неудачного запуска.
             HOST_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
             with HOST_LOG_FILE.open("a", encoding="utf-8") as log:
                 result = subprocess.run(
@@ -158,6 +167,8 @@ class PublicBootstrap:
             log.write(f"\n===== Public Bootstrap {VERSION} =====\n")
 
     def ensure_host_github_key(self) -> bool:
+        # Первый запуск только создаёт ключ. 990 появится уже после того,
+        # как пользователь добавит открытый ключ в GitHub.
         HOST_BOOTSTRAP_DIR.mkdir(parents=True, exist_ok=True)
         HOST_BOOTSTRAP_DIR.chmod(0o700)
 
@@ -318,39 +329,27 @@ class PublicBootstrap:
 
     def create_ct(self, template_ref: str) -> None:
         self.log(f"Создание временного LXC {CTID}")
-        self.run(
-            "pct",
-            "create",
-            str(CTID),
-            template_ref,
-            "--hostname",
-            CT_HOSTNAME,
-            "--ostype",
-            "debian",
-            "--unprivileged",
-            "1",
-            "--cores",
-            str(CT_CORES),
-            "--memory",
-            str(CT_MEMORY_MB),
-            "--swap",
-            str(CT_SWAP_MB),
-            "--rootfs",
-            f"{CT_STORAGE}:{CT_DISK_GB}",
-            "--net0",
-            f"name=eth0,bridge={CT_BRIDGE},ip=dhcp,type=veth",
-            "--features",
-            "nesting=1,keyctl=1",
-            "--onboot",
-            "0",
-            "--protection",
-            "0",
-            "--tags",
-            "bootstrap-runner;proxmox-bootstrap",
+
+        # Параметр и его значение держим рядом: так команду pct можно читать
+        # почти как её эквивалент в консоли.
+        create_args = [
+            "create", str(CTID), template_ref,
+            "--hostname", CT_HOSTNAME,
+            "--ostype", "debian",
+            "--unprivileged", "1",
+            "--cores", str(CT_CORES),
+            "--memory", str(CT_MEMORY_MB),
+            "--swap", str(CT_SWAP_MB),
+            "--rootfs", f"{CT_STORAGE}:{CT_DISK_GB}",
+            "--net0", f"name=eth0,bridge={CT_BRIDGE},ip=dhcp,type=veth",
+            "--features", "nesting=1,keyctl=1",
+            "--onboot", "0",
+            "--protection", "0",
+            "--tags", "bootstrap-runner;proxmox-bootstrap",
             "--description",
             "managed-by=proxmox-bootstrap role=bootstrap-runner temporary=true",
-            quiet=True,
-        )
+        ]
+        self.pct(*create_args, quiet=True)
         self.ok(f"LXC {CTID} создан")
 
     def ensure_ct(self) -> None:
@@ -380,20 +379,17 @@ class PublicBootstrap:
         self.fail(f"сеть LXC {CTID} не готова")
 
     def push_file(self, source: Path, target: Path, mode: str) -> None:
-        self.pct(
-            "push",
-            str(CTID),
-            str(source),
-            str(target),
-            "--user",
-            "0",
-            "--group",
-            "0",
-            "--perms",
-            mode,
-        )
+        # Все файлы передаются в 990 от root с явно заданными правами.
+        push_args = [
+            "push", str(CTID), str(source), str(target),
+            "--user", "0",
+            "--group", "0",
+            "--perms", mode,
+        ]
+        self.pct(*push_args)
 
     def prepare_git_access(self) -> None:
+        # В 990 копируется только ключ чтения закрытого проекта.
         self.ct_exec("install", "-d", "-m", "0700", "/root/.ssh")
         self.push_file(HOST_GITHUB_KEY, CT_GITHUB_KEY, "0600")
 
@@ -425,6 +421,8 @@ class PublicBootstrap:
 
     def prepare_git(self) -> None:
         self.log("Подготовка доступа к закрытому проекту")
+
+        # На физический PVE Git не устанавливаем. Он нужен только внутри 990.
         self.ct_exec(
             "env",
             "LANG=C.UTF-8",
@@ -475,24 +473,22 @@ class PublicBootstrap:
             )
         else:
             self.ct_exec("install", "-d", "-m", "0755", str(PROJECT_DIR.parent))
-            self.ct_exec(
-                "env",
-                f"GIT_SSH_COMMAND={git_ssh}",
-                "git",
-                "clone",
-                "--branch",
-                self.project_branch,
+            clone_args = [
+                "env", f"GIT_SSH_COMMAND={git_ssh}",
+                "git", "clone",
+                "--branch", self.project_branch,
                 "--single-branch",
-                PROJECT_REPO,
-                str(PROJECT_DIR),
-                quiet=True,
-            )
+                PROJECT_REPO, str(PROJECT_DIR),
+            ]
+            self.ct_exec(*clone_args, quiet=True)
 
         if self.ct_exec("test", "-s", str(PRIVATE_ENTRYPOINT), check=False).returncode:
             self.fail(f"в закрытом проекте отсутствует {PRIVATE_ENTRYPOINT.name}")
         self.ok(f"Закрытый проект получен внутри LXC {CTID}")
 
     def run_private_bootstrap(self) -> None:
+        # Закрытый Python-файл вытаскивается из 990 на PVE только на время
+        # текущего запуска. После завершения временная копия удаляется.
         fd, name = tempfile.mkstemp(prefix="proxmox-private-bootstrap.", dir="/run")
         os.close(fd)
         helper = Path(name)
@@ -500,6 +496,7 @@ class PublicBootstrap:
             self.pct("pull", str(CTID), str(PRIVATE_ENTRYPOINT), str(helper))
             helper.chmod(0o700)
             self.log("Передача управления закрытому bootstrap")
+            # Явно передаём только контракт между public и private слоями.
             env = {
                 "PROJECT_BRANCH": self.project_branch,
                 "PROJECT_DIR": str(PROJECT_DIR),
@@ -514,6 +511,8 @@ class PublicBootstrap:
             helper.unlink(missing_ok=True)
 
     def execute(self) -> None:
+        # Публичная часть заканчивается сразу после передачи управления
+        # закрытому bootstrap-host.py.
         self.require_pve()
         self.acquire_lock()
         self.init_log()
@@ -533,7 +532,10 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Минимальная публичная точка входа для закрытого Proxmox bootstrap."
     )
-    parser.add_argument("--project-branch", default=os.environ.get("PROJECT_BRANCH", "feature/bootstrap-990"))
+    parser.add_argument(
+        "--project-branch",
+        default=os.environ.get("PROJECT_BRANCH", "feature/bootstrap-990"),
+    )
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--check", action="store_true")
     group.add_argument("--recover", action="store_true")
