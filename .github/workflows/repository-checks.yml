@@ -39,13 +39,13 @@ jobs:
           grep -q '^CTID=990$' bootstrap-pve.sh
           grep -q '^CT_HOSTNAME="bootstrap-runner"$' bootstrap-pve.sh
           grep -q 'PROJECT_DIR="/var/lib/bootstrap-runner/project"' bootstrap-pve.sh
-          grep -q 'PRIVATE_ENTRYPOINT=' bootstrap-pve.sh
+          grep -q 'PRIVATE_ENTRYPOINT=.*bootstrap-host.py' bootstrap-pve.sh
           grep -q 'HOST_BOOTSTRAP_DIR="/root/.config/proxmox-bootstrap"' bootstrap-pve.sh
           grep -q 'HOST_GITHUB_KEY=' bootstrap-pve.sh
           grep -q 'PROJECT_REPO="git@github.com:zsergeyru/proxmox.git"' bootstrap-pve.sh
           grep -q 'git clone --branch' bootstrap-pve.sh
           grep -q 'pct pull "\$CTID" "\$PRIVATE_ENTRYPOINT"' bootstrap-pve.sh
-          grep -q 'bash "\$helper"' bootstrap-pve.sh
+          grep -q 'python3 "\$helper"' bootstrap-pve.sh
           grep -q 'exec 9>"\$LOCK_FILE"' bootstrap-pve.sh
           grep -q 'flock -n 9' bootstrap-pve.sh
 
