@@ -534,7 +534,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--project-branch",
-        default=os.environ.get("PROJECT_BRANCH", "feature/bootstrap-990"),
+        default=os.environ.get("PROJECT_BRANCH", "main"),
     )
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--check", action="store_true")
