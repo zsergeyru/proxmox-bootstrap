@@ -157,7 +157,7 @@ jobs:
       - name: Check public repository stays minimal
         run: |
           expected=.github/workflows/repository-checks.yml\nREADME.md\nbootstrap-pve.py\nbootstrap-pve.sh'
-          actual="$(find . -type f -not -path './.git/*' -printf '%P\n' | sort)"
+          actual="$(find . -type f -not -path './.git/*' -not -path './__pycache__/*' -printf '%P\n' | sort)"
           test "$actual" = "$expected"
 
       - name: Check whitespace errors
