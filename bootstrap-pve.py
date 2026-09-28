@@ -496,7 +496,7 @@ class PublicBootstrap:
             self.pct("pull", str(CTID), str(PRIVATE_ENTRYPOINT), str(helper))
             helper.chmod(0o700)
             self.log("Передача управления закрытому bootstrap")
-            # Явно передаём только контракт между public и private слоями.
+            # Явно передаём только данные, согласованные между публичной и закрытой частями.
             env = {
                 "PROJECT_BRANCH": self.project_branch,
                 "PROJECT_DIR": str(PROJECT_DIR),
@@ -512,7 +512,7 @@ class PublicBootstrap:
 
     def execute(self) -> None:
         # Публичная часть заканчивается сразу после передачи управления
-        # закрытому bootstrap-host.py.
+        # закрытому сценарию bootstrap-host.py.
         self.require_pve()
         self.acquire_lock()
         self.init_log()
