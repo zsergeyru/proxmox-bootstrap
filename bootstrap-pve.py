@@ -468,7 +468,7 @@ class PublicBootstrap:
                 "checkout",
                 "-B",
                 self.project_branch,
-                f"origin/{self.project_branch}",
+                "FETCH_HEAD",
                 quiet=True,
             )
         else:
