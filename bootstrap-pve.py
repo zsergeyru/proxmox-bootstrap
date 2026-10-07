@@ -29,7 +29,9 @@ TEMPLATE_STORAGE = "local"
 # Закрытый проект содержит всю оркестрацию 910 и политику PVE-доступа.
 PROJECT_REPO = "git@github.com:zsergeyru/proxmox.git"
 PROJECT_DIR = Path("/var/lib/bootstrap-runner/project")
-PRIVATE_ENTRYPOINT = PROJECT_DIR / "scripts/bootstrap-runner/bootstrap-host.py"
+PRIVATE_ROOT = PROJECT_DIR / "scripts/bootstrap-runner"
+PRIVATE_ENTRYPOINT = PRIVATE_ROOT / "bootstrap-host.py"
+CT_PRIVATE_ARCHIVE = Path("/run/proxmox-private-bootstrap.tar")
 
 # На PVE постоянно сохраняется только read-only Deploy Key и служебный маркер
 # скачанного шаблона. Остальные данные bootstrap должны быть временными.
@@ -147,6 +149,7 @@ class PublicBootstrap:
             "pvesm",
             "ssh-keygen",
             "python3",
+            "tar",
         ):
             if shutil.which(command) is None:
                 self.fail(f"не найден {command}")
@@ -443,6 +446,7 @@ class PublicBootstrap:
             "ca-certificates",
             "git",
             "openssh-client",
+            "tar",
             quiet=True,
         )
         self.prepare_git_access()
@@ -487,14 +491,49 @@ class PublicBootstrap:
         self.ok(f"Закрытый проект получен внутри LXC {CTID}")
 
     def run_private_bootstrap(self) -> None:
-        # Закрытый Python-файл вытаскивается из 990 на PVE только на время
-        # текущего запуска. После завершения временная копия удаляется.
-        fd, name = tempfile.mkstemp(prefix="proxmox-private-bootstrap.", dir="/run")
-        os.close(fd)
-        helper = Path(name)
-        try:
-            self.pct("pull", str(CTID), str(PRIVATE_ENTRYPOINT), str(helper))
+        # Закрытый bootstrap состоит из точки входа и соседнего Python-пакета.
+        # На PVE весь каталог переносится только на время текущего запуска.
+        with tempfile.TemporaryDirectory(
+            prefix="proxmox-private-bootstrap.",
+            dir="/run",
+        ) as temporary:
+            temporary_dir = Path(temporary)
+            archive = temporary_dir / "bootstrap-runner.tar"
+            try:
+                self.ct_exec(
+                    "tar",
+                    "-C",
+                    str(PROJECT_DIR / "scripts"),
+                    "-cf",
+                    str(CT_PRIVATE_ARCHIVE),
+                    "bootstrap-runner",
+                )
+                self.pct(
+                    "pull",
+                    str(CTID),
+                    str(CT_PRIVATE_ARCHIVE),
+                    str(archive),
+                )
+            finally:
+                self.ct_exec(
+                    "rm",
+                    "-f",
+                    str(CT_PRIVATE_ARCHIVE),
+                    check=False,
+                )
+
+            self.run(
+                "tar",
+                "-C",
+                str(temporary_dir),
+                "-xf",
+                str(archive),
+            )
+            helper = temporary_dir / "bootstrap-runner" / "bootstrap-host.py"
+            if not helper.is_file() or helper.stat().st_size == 0:
+                self.fail("закрытый bootstrap передан без bootstrap-host.py")
             helper.chmod(0o700)
+
             self.log("Передача управления закрытому bootstrap")
             # Явно передаём только данные, согласованные между публичной и закрытой частями.
             env = {
@@ -507,8 +546,6 @@ class PublicBootstrap:
                 "HOST_LOG_FILE": str(HOST_LOG_FILE),
             }
             self.run("python3", str(helper), *self.forward_args, env=env)
-        finally:
-            helper.unlink(missing_ok=True)
 
     def execute(self) -> None:
         # Публичная часть заканчивается сразу после передачи управления
