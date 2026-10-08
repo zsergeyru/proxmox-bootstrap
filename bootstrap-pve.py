@@ -600,7 +600,12 @@ class PublicBootstrap:
         self.timed_step("Получение закрытого проекта", self.checkout_project)
         self.timed_step("Закрытый bootstrap", self.run_private_bootstrap)
         elapsed = self.format_duration(time.monotonic() - self._started_at)
-        self.ok(f"Восстановление завершено ({elapsed})")
+        label = (
+            "Восстановление завершено"
+            if "--recover" in self.forward_args
+            else "Bootstrap завершён"
+        )
+        self.ok(f"{label:<55} ({elapsed})")
 
 
 def parse_args() -> argparse.Namespace:
