@@ -98,6 +98,8 @@ class PublicBootstrap:
         total = max(0, int(seconds))
         hours, remainder = divmod(total, 3600)
         minutes, remaining = divmod(remainder, 60)
+        if not hours:
+            return f"{minutes:02d}:{remaining:02d}"
         return f"{hours:02d}:{minutes:02d}:{remaining:02d}"
 
     def timed_step(self, name: str, operation, *args, **kwargs):
