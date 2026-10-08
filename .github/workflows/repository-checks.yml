@@ -115,7 +115,7 @@ jobs:
               def run(self, *args, **kwargs):
                   assert args == ("pct", "exec", str(module.CTID), "--", "stat", "-c", "%a", "/etc")
                   assert kwargs == {"capture": True}
-                  return SimpleNamespace(stdout=self.mode + "\\n")
+                  return SimpleNamespace(stdout=self.mode + "\n")
 
               def ct_exec(self, *args, **kwargs):
                   self.calls.append(args)
