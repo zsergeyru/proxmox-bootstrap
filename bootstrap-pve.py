@@ -433,6 +433,31 @@ class PublicBootstrap:
             time.sleep(2)
         self.fail(f"сеть LXC {CTID} не готова")
 
+    def ensure_apt_dns(self) -> None:
+        """Проверить права /etc и разрешение DNS именно от пользователя _apt."""
+
+        mode = self.run(
+            "pct", "exec", str(CTID), "--",
+            "stat", "-c", "%a", "/etc", capture=True,
+        ).stdout.strip()
+        if mode != "755":
+            self.ct_exec("chmod", "0755", "/etc", quiet=True)
+            self.info(f"LXC {CTID}: права /etc исправлены ({mode} → 755)")
+
+        for domain in ("deb.debian.org", "security.debian.org"):
+            result = self.ct_exec(
+                "runuser", "-u", "_apt", "--",
+                "getent", "ahostsv4", domain,
+                quiet=True,
+                check=False,
+            )
+            if result.returncode != 0:
+                self.fail(
+                    f"LXC {CTID}: пользователь _apt не может разрешить {domain}. "
+                    "Проверьте DNS и права /etc/resolv.conf"
+                )
+        self.ok(f"LXC {CTID}: DNS для APT проверен от пользователя _apt")
+
     def push_file(self, source: Path, target: Path, mode: str) -> None:
         # Все файлы передаются в 990 от root с явно заданными правами.
         push_args = [
@@ -613,6 +638,7 @@ class PublicBootstrap:
 
             self.timed_step("Подготовка LXC 990", self.ensure_ct)
             self.timed_step("Запуск LXC 990", self.ensure_running)
+            self.timed_step("Проверка DNS для APT в 990", self.ensure_apt_dns)
             self.timed_step("Подготовка Git в 990", self.prepare_git)
             self.timed_step("Получение закрытого проекта", self.checkout_project)
             self.timed_step("Закрытый bootstrap", self.run_private_bootstrap)

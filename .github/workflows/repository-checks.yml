@@ -94,6 +94,59 @@ jobs:
           assert host.events == ["require", "lock", "log", "info", "new-key"], host.events
           PY
 
+      - name: Check APT DNS permissions and _apt lookup
+        run: |
+          python3 - <<'PY'
+          import importlib.util
+          from pathlib import Path
+          from types import SimpleNamespace
+
+          spec = importlib.util.spec_from_file_location("public_bootstrap", Path("bootstrap-pve.py"))
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+
+          class Harness(module.PublicBootstrap):
+              def __init__(self, mode, broken_domain=None):
+                  super().__init__("main", [])
+                  self.mode = mode
+                  self.broken_domain = broken_domain
+                  self.calls = []
+
+              def run(self, *args, **kwargs):
+                  assert args == ("pct", "exec", str(module.CTID), "--", "stat", "-c", "%a", "/etc")
+                  assert kwargs == {"capture": True}
+                  return SimpleNamespace(stdout=self.mode + "\n")
+
+              def ct_exec(self, *args, **kwargs):
+                  self.calls.append(args)
+                  if args == ("chmod", "0755", "/etc"):
+                      assert kwargs == {"quiet": True}
+                      self.mode = "755"
+                      return SimpleNamespace(returncode=0)
+                  assert args[:6] == ("runuser", "-u", "_apt", "--", "getent", "ahostsv4"), args
+                  assert kwargs == {"quiet": True, "check": False}
+                  return SimpleNamespace(returncode=int(args[-1] == self.broken_domain))
+
+          healthy = Harness("755")
+          healthy.ensure_apt_dns()
+          assert len(healthy.calls) == 2, healthy.calls
+
+          repaired = Harness("700")
+          repaired.ensure_apt_dns()
+          assert repaired.mode == "755", repaired.mode
+          assert repaired.calls[0] == ("chmod", "0755", "/etc"), repaired.calls
+          assert len(repaired.calls) == 3, repaired.calls
+
+          broken = Harness("700", "deb.debian.org")
+          try:
+              broken.ensure_apt_dns()
+          except module.BootstrapError as exc:
+              assert "_apt" in str(exc), exc
+          else:
+              raise AssertionError("DNS error for _apt must stop before apt install")
+          assert broken.mode == "755", broken.mode
+          PY
+
       - name: Check template reference stays clean
         run: |
           python3 - <<'PY'
