@@ -73,6 +73,8 @@ class PublicBootstrap:
         self.c_red = "\033[31m" if self.color else ""
         self.c_cyan = "\033[36m" if self.color else ""
         self._lock_handle = None
+        self._started_at = time.monotonic()
+        self._timings: list[tuple[str, float, bool]] = []
 
     def log(self, message: str) -> None:
         print(f"\n{self.c_bold}{self.c_blue}==> {message}{self.c_reset}")
@@ -85,6 +87,49 @@ class PublicBootstrap:
 
     def fail(self, message: str) -> None:
         raise BootstrapError(message)
+
+    @staticmethod
+    def format_duration(seconds: float) -> str:
+        total = max(0, int(seconds))
+        hours, remainder = divmod(total, 3600)
+        minutes, remaining = divmod(remainder, 60)
+        return f"{hours:02d}:{minutes:02d}:{remaining:02d}"
+
+    def timed_step(self, name: str, operation, *args, **kwargs):
+        """Показать длительность этапа и при успехе, и при ошибке."""
+
+        started = time.monotonic()
+        success = False
+        try:
+            value = operation(*args, **kwargs)
+            success = True
+            return value
+        finally:
+            elapsed = time.monotonic() - started
+            self._timings.append((name, elapsed, success))
+            marker = "[ВРЕМЯ]" if success else "[ВРЕМЯ][ОШИБКА]"
+            print(
+                f"{marker} {name}: {self.format_duration(elapsed)}",
+                flush=True,
+            )
+
+    def print_timing_summary(self) -> None:
+        if not self._timings:
+            return
+        print("\n[ВРЕМЯ] Длительность этапов публичного bootstrap:", flush=True)
+        for name, elapsed, success in sorted(
+            self._timings, key=lambda item: item[1], reverse=True
+        ):
+            status = "" if success else " (прерван)"
+            print(
+                f"[ВРЕМЯ] {self.format_duration(elapsed)} — {name}{status}",
+                flush=True,
+            )
+        print(
+            f"[ВРЕМЯ] Всего: "
+            f"{self.format_duration(time.monotonic() - self._started_at)}",
+            flush=True,
+        )
 
     def run(
         self,
@@ -550,19 +595,22 @@ class PublicBootstrap:
     def execute(self) -> None:
         # Публичная часть заканчивается сразу после передачи управления
         # закрытому сценарию bootstrap-host.py.
-        self.require_pve()
-        self.acquire_lock()
-        self.init_log()
-        self.info(f"Public Bootstrap {VERSION}")
+        try:
+            self.require_pve()
+            self.acquire_lock()
+            self.init_log()
+            self.info(f"Public Bootstrap {VERSION}")
 
-        if self.ensure_host_github_key():
-            return
+            if self.ensure_host_github_key():
+                return
 
-        self.ensure_ct()
-        self.ensure_running()
-        self.prepare_git()
-        self.checkout_project()
-        self.run_private_bootstrap()
+            self.timed_step("Подготовка LXC 990", self.ensure_ct)
+            self.timed_step("Запуск LXC 990", self.ensure_running)
+            self.timed_step("Подготовка Git в 990", self.prepare_git)
+            self.timed_step("Получение закрытого проекта", self.checkout_project)
+            self.timed_step("Закрытый bootstrap", self.run_private_bootstrap)
+        finally:
+            self.print_timing_summary()
 
 
 def parse_args() -> argparse.Namespace:
