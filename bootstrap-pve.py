@@ -76,8 +76,24 @@ class PublicBootstrap:
         self._started_at = time.monotonic()
         self._active_timing: tuple[str, float] | None = None
         self._timed_ok_count = 0
+        self._section_title: str | None = None
+        self._section_started = 0.0
+
+    def finish_section(self, *, interrupted: bool = False) -> None:
+        """Напечатать общее время раздела перед следующим заголовком."""
+
+        title = self._section_title
+        if title is None:
+            return
+        elapsed = self.format_duration(time.monotonic() - self._section_started)
+        marker = "[ИТОГ]" if not interrupted else "[ПРЕРВАНО]"
+        print(f"{marker} {title:<55} ({elapsed})", flush=True)
+        self._section_title = None
 
     def log(self, message: str) -> None:
+        self.finish_section()
+        self._section_title = message
+        self._section_started = time.monotonic()
         print(f"\n{self.c_bold}{self.c_blue}==> {message}{self.c_reset}")
 
     def ok(self, message: str) -> None:
@@ -586,26 +602,32 @@ class PublicBootstrap:
     def execute(self) -> None:
         # Публичная часть заканчивается сразу после передачи управления
         # закрытому сценарию bootstrap-host.py.
-        self.require_pve()
-        self.acquire_lock()
-        self.init_log()
-        self.info(f"Public Bootstrap {VERSION}")
+        try:
+            self.require_pve()
+            self.acquire_lock()
+            self.init_log()
+            self.info(f"Public Bootstrap {VERSION}")
 
-        if self.ensure_host_github_key():
-            return
+            if self.ensure_host_github_key():
+                return
 
-        self.timed_step("Подготовка LXC 990", self.ensure_ct)
-        self.timed_step("Запуск LXC 990", self.ensure_running)
-        self.timed_step("Подготовка Git в 990", self.prepare_git)
-        self.timed_step("Получение закрытого проекта", self.checkout_project)
-        self.timed_step("Закрытый bootstrap", self.run_private_bootstrap)
-        elapsed = self.format_duration(time.monotonic() - self._started_at)
-        label = (
-            "Восстановление завершено"
-            if "--recover" in self.forward_args
-            else "Bootstrap завершён"
-        )
-        self.ok(f"{label:<55} ({elapsed})")
+            self.timed_step("Подготовка LXC 990", self.ensure_ct)
+            self.timed_step("Запуск LXC 990", self.ensure_running)
+            self.timed_step("Подготовка Git в 990", self.prepare_git)
+            self.timed_step("Получение закрытого проекта", self.checkout_project)
+            self.timed_step("Закрытый bootstrap", self.run_private_bootstrap)
+        except BaseException:
+            self.finish_section(interrupted=True)
+            raise
+        else:
+            self.finish_section()
+            elapsed = self.format_duration(time.monotonic() - self._started_at)
+            label = (
+                "Восстановление завершено"
+                if "--recover" in self.forward_args
+                else "Bootstrap завершён"
+            )
+            self.ok(f"{label:<55} ({elapsed})")
 
 
 def parse_args() -> argparse.Namespace:
