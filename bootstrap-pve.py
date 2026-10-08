@@ -74,12 +74,17 @@ class PublicBootstrap:
         self.c_cyan = "\033[36m" if self.color else ""
         self._lock_handle = None
         self._started_at = time.monotonic()
-        self._timings: list[tuple[str, float, bool]] = []
+        self._active_timing: tuple[str, float] | None = None
+        self._timed_ok_count = 0
 
     def log(self, message: str) -> None:
         print(f"\n{self.c_bold}{self.c_blue}==> {message}{self.c_reset}")
 
     def ok(self, message: str) -> None:
+        if self._active_timing is not None:
+            _, started = self._active_timing
+            message += f" ({self.format_duration(time.monotonic() - started)})"
+            self._timed_ok_count += 1
         print(f"{self.c_bold}{self.c_green}[ОК]{self.c_reset} {message}")
 
     def info(self, message: str) -> None:
@@ -96,40 +101,24 @@ class PublicBootstrap:
         return f"{hours:02d}:{minutes:02d}:{remaining:02d}"
 
     def timed_step(self, name: str, operation, *args, **kwargs):
-        """Показать длительность этапа и при успехе, и при ошибке."""
+        """Дополнить существующую строку [ОК] временем выполнения."""
 
         started = time.monotonic()
-        success = False
+        previous = self._active_timing
+        previous_count = self._timed_ok_count
+        self._active_timing = (name, started)
+        self._timed_ok_count = 0
         try:
-            value = operation(*args, **kwargs)
-            success = True
-            return value
+            result = operation(*args, **kwargs)
+            if not self._timed_ok_count:
+                self.ok(f"{name} завершён")
+            return result
+        except BootstrapError as exc:
+            elapsed = self.format_duration(time.monotonic() - started)
+            raise BootstrapError(f"{exc} (этап «{name}»: {elapsed})") from exc
         finally:
-            elapsed = time.monotonic() - started
-            self._timings.append((name, elapsed, success))
-            marker = "[ВРЕМЯ]" if success else "[ВРЕМЯ][ОШИБКА]"
-            print(
-                f"{marker} {name}: {self.format_duration(elapsed)}",
-                flush=True,
-            )
-
-    def print_timing_summary(self) -> None:
-        if not self._timings:
-            return
-        print("\n[ВРЕМЯ] Длительность этапов публичного bootstrap:", flush=True)
-        for name, elapsed, success in sorted(
-            self._timings, key=lambda item: item[1], reverse=True
-        ):
-            status = "" if success else " (прерван)"
-            print(
-                f"[ВРЕМЯ] {self.format_duration(elapsed)} — {name}{status}",
-                flush=True,
-            )
-        print(
-            f"[ВРЕМЯ] Всего: "
-            f"{self.format_duration(time.monotonic() - self._started_at)}",
-            flush=True,
-        )
+            self._active_timing = previous
+            self._timed_ok_count = previous_count
 
     def run(
         self,
@@ -595,22 +584,21 @@ class PublicBootstrap:
     def execute(self) -> None:
         # Публичная часть заканчивается сразу после передачи управления
         # закрытому сценарию bootstrap-host.py.
-        try:
-            self.require_pve()
-            self.acquire_lock()
-            self.init_log()
-            self.info(f"Public Bootstrap {VERSION}")
+        self.require_pve()
+        self.acquire_lock()
+        self.init_log()
+        self.info(f"Public Bootstrap {VERSION}")
 
-            if self.ensure_host_github_key():
-                return
+        if self.ensure_host_github_key():
+            return
 
-            self.timed_step("Подготовка LXC 990", self.ensure_ct)
-            self.timed_step("Запуск LXC 990", self.ensure_running)
-            self.timed_step("Подготовка Git в 990", self.prepare_git)
-            self.timed_step("Получение закрытого проекта", self.checkout_project)
-            self.timed_step("Закрытый bootstrap", self.run_private_bootstrap)
-        finally:
-            self.print_timing_summary()
+        self.timed_step("Подготовка LXC 990", self.ensure_ct)
+        self.timed_step("Запуск LXC 990", self.ensure_running)
+        self.timed_step("Подготовка Git в 990", self.prepare_git)
+        self.timed_step("Получение закрытого проекта", self.checkout_project)
+        self.timed_step("Закрытый bootstrap", self.run_private_bootstrap)
+        elapsed = self.format_duration(time.monotonic() - self._started_at)
+        self.ok(f"Восстановление завершено ({elapsed})")
 
 
 def parse_args() -> argparse.Namespace:
