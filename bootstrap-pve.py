@@ -83,7 +83,7 @@ class PublicBootstrap:
     def ok(self, message: str) -> None:
         if self._active_timing is not None:
             _, started = self._active_timing
-            message += f" ({self.format_duration(time.monotonic() - started)})"
+            message = f"{message:<55} ({self.format_duration(time.monotonic() - started)})"
             self._timed_ok_count += 1
         print(f"{self.c_bold}{self.c_green}[ОК]{self.c_reset} {message}")
 
@@ -113,7 +113,7 @@ class PublicBootstrap:
         try:
             result = operation(*args, **kwargs)
             if not self._timed_ok_count:
-                self.ok(f"{name} завершён")
+                self.ok(name)
             return result
         except BootstrapError as exc:
             elapsed = self.format_duration(time.monotonic() - started)
