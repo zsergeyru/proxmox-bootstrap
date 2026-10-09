@@ -140,9 +140,9 @@ jobs:
                   assert argv[1:] == ("list",), argv
                   assert kwargs == {"capture": True}, kwargs
                   if argv[0] == "pct":
-                      body = "VMID Status Lock Name\\n910 running - infra-manager\\n" if self.occupied else "VMID Status Lock Name\\n"
+                      body = "VMID Status Lock Name\n910 running - infra-manager\n" if self.occupied else "VMID Status Lock Name\n"
                   else:
-                      body = "VMID NAME STATUS\\n"
+                      body = "VMID NAME STATUS\n"
                   return SimpleNamespace(stdout=body)
 
               def ensure_host_github_key(self):
