@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import json
 import os
 import re
 import shutil
@@ -40,6 +41,8 @@ HOST_GITHUB_KEY = HOST_BOOTSTRAP_DIR / "github_proxmox_repo_ed25519"
 HOST_GITHUB_PUB = Path(f"{HOST_GITHUB_KEY}.pub")
 HOST_TEMPLATE_MARKER = HOST_BOOTSTRAP_DIR / "debian13-template.ref"
 HOST_LOG_FILE = Path("/var/log/proxmox-bootstrap.log")
+HOST_MANAGER_CONFIG = Path("/etc/infra-manager/openbao-host.json")
+DEFAULT_MANAGER_VMID = 910
 LOCK_FILE = Path("/run/lock/proxmox-bootstrap.lock")
 
 CT_GITHUB_KEY = Path("/root/.ssh/github_proxmox_repo_ed25519")
@@ -197,6 +200,7 @@ class PublicBootstrap:
             self.fail("сценарий должен выполняться от root на PVE")
         for command in (
             "pct",
+            "qm",
             "pveam",
             "pvesm",
             "ssh-keygen",
@@ -220,6 +224,36 @@ class PublicBootstrap:
         HOST_LOG_FILE.chmod(0o600)
         with HOST_LOG_FILE.open("a", encoding="utf-8") as log:
             log.write(f"\n===== Public Bootstrap {VERSION} =====\n")
+
+    def refuse_existing_manager(self) -> None:
+        """Не создавать 990, если управляющий гость уже существует."""
+        if "--recover" in self.forward_args:
+            # Единственный разрешённый путь пересоздания существующего гостя:
+            # внутренний вызов от PVE-only аварийного помощника.
+            return
+
+        vmid = DEFAULT_MANAGER_VMID
+        if HOST_MANAGER_CONFIG.exists():
+            try:
+                data = json.loads(HOST_MANAGER_CONFIG.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                self.fail(f"Повреждена конфигурация infra-manager: {HOST_MANAGER_CONFIG}: {exc}")
+            if not isinstance(data, dict) or type(data.get("vmid")) is not int or data["vmid"] <= 0:
+                self.fail(f"Некорректный VMID в {HOST_MANAGER_CONFIG}")
+            vmid = data["vmid"]
+
+        # Не маскировать сбои PVE под отсутствие гостя: pct/qm list должны
+        # успешно отработать до любых изменяющих действий bootstrap.
+        for tool in ("pct", "qm"):
+            result = self.run(tool, "list", capture=True)
+            for row in result.stdout.splitlines()[1:]:
+                fields = row.split()
+                if fields and fields[0] == str(vmid):
+                    self.fail(
+                        f"VMID {vmid} уже занят; публичный установщик не изменяет "
+                        "существующий объект. Используйте infra-manager status, "
+                        "deploy или recover на PVE."
+                    )
 
     def ensure_host_github_key(self) -> bool:
         # Первый запуск только создаёт ключ. 990 появится уже после того,
@@ -630,6 +664,7 @@ class PublicBootstrap:
         try:
             self.require_pve()
             self.acquire_lock()
+            self.refuse_existing_manager()
             self.init_log()
             self.info(f"Public Bootstrap {VERSION}")
 
@@ -664,21 +699,19 @@ def parse_args() -> argparse.Namespace:
         "--project-branch",
         default=os.environ.get("PROJECT_BRANCH", "main"),
     )
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument("--check", action="store_true")
-    group.add_argument("--recover", action="store_true")
-    group.add_argument("--remove", action="store_true")
-    group.add_argument("--purge", action="store_true")
+    # Временная совместимость: ранее установленный PVE-only помощник
+    # вызывает загрузчик с --recover. Новый помощник использует внутренний
+    # признак окружения и не добавляет публичных параметров.
+    parser.add_argument("--recover", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
 
     if not re.fullmatch(r"[A-Za-z0-9._/-]+", args.project_branch):
         parser.error(f"некорректное имя ветки проекта: {args.project_branch}")
 
-    forward = []
-    for name in ("check", "recover", "remove", "purge"):
-        if getattr(args, name):
-            forward.append(f"--{name}")
-    args.forward_args = forward
+    internal_mode = os.environ.get("PROXMOX_BOOTSTRAP_INTERNAL_RECOVERY", "")
+    if internal_mode not in {"", "1"}:
+        parser.error("Некорректный внутренний режим bootstrap")
+    args.forward_args = ["--recover"] if internal_mode == "1" or args.recover else []
     return args
 
 
