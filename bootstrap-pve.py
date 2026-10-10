@@ -702,6 +702,24 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
+    except Exception as exc:
+        # Не выводить оператору стек вызовов; детали сохранять для диагностики.
+        import traceback
+
+        HOST_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with HOST_LOG_FILE.open("a", encoding="utf-8") as log:
+            traceback.print_exc(file=log)
+        print(
+            f"ОШИБКА: Неожиданный сбой публичного загрузчика: {exc}.",
+            file=sys.stderr,
+        )
+        print(
+            f"Действие: проверьте журнал {HOST_LOG_FILE} и повторите запуск "
+            "после устранения причины. Контейнеры с неподтверждённой "
+            "принадлежностью автоматически не удаляются.",
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 
