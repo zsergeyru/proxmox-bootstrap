@@ -49,7 +49,7 @@ jobs:
           grep -q 'PROJECT_REPO = "git@github.com:zsergeyru/proxmox.git"' bootstrap-pve.py
           grep -q 'managed-by=proxmox-bootstrap' bootstrap-pve.py
 
-          if grep -Eq 'INFRA_CTID|PVEVMAdmin|PVEDatastoreUser|PVESDNUser|PVETemplateUser|InfraManagedGuest|deploy-910|pve-bootstrap-access|infra-manager-status' bootstrap-pve.py; then
+          if grep -Eq '910|infra-manager|HOST_MANAGER|DEFAULT_MANAGER_VMID|refuse_existing_manager|INFRA_CTID|PVEVMAdmin|PVEDatastoreUser|PVESDNUser|PVETemplateUser|InfraManagedGuest|deploy-910|pve-bootstrap-access' bootstrap-pve.py; then
             echo "Infrastructure orchestration must stay in the private project"
             exit 1
           fi
@@ -82,9 +82,6 @@ jobs:
               def info(self, message):
                   self.events.append("info")
 
-              def refuse_existing_manager(self):
-                  self.events.append("guard")
-
               def ensure_host_github_key(self):
                   self.events.append("new-key")
                   return True
@@ -94,31 +91,26 @@ jobs:
 
           host = Harness()
           host.execute()
-          assert host.events == ["require", "lock", "guard", "log", "info", "new-key"], host.events
+          assert host.events == ["require", "lock", "log", "info", "new-key"], host.events
           PY
 
-      - name: Check early guest guard and supported public arguments
+      - name: Check public loader never inspects the management guest
         run: |
           python3 - <<'PY'
           import contextlib
           import importlib.util
           import io
-          import json
           import os
           import sys
-          import tempfile
           from pathlib import Path
-          from types import SimpleNamespace
 
           spec = importlib.util.spec_from_file_location("public_bootstrap", Path("bootstrap-pve.py"))
           module = importlib.util.module_from_spec(spec)
           spec.loader.exec_module(module)
 
           class Harness(module.PublicBootstrap):
-              def __init__(self, *, occupied=False, recovering=False, invalid_list=False):
+              def __init__(self, *, recovering=False):
                   super().__init__("main", ["--recover"] if recovering else [])
-                  self.occupied = occupied
-                  self.invalid_list = invalid_list
                   self.events = []
 
               def require_pve(self):
@@ -134,61 +126,44 @@ jobs:
                   self.events.append("info")
 
               def run(self, *argv, **kwargs):
-                  self.events.append("list:" + argv[0])
-                  if self.invalid_list:
-                      raise module.BootstrapError("PVE недоступен")
-                  assert argv[1:] == ("list",), argv
-                  assert kwargs == {"capture": True}, kwargs
-                  if argv[0] == "pct":
-                      body = "VMID Status Lock Name\n910 running - infra-manager\n" if self.occupied else "VMID Status Lock Name\n"
-                  else:
-                      body = "VMID NAME STATUS\n"
-                  return SimpleNamespace(stdout=body)
+                  raise AssertionError(f"Публичный загрузчик не должен проверять другие ВМ/контейнеры: {argv}")
 
               def ensure_host_github_key(self):
-                  self.events.append("new-key")
-                  return True
+                  self.events.append("key")
+                  return False
+
+              def timed_step(self, name, operation, *args, **kwargs):
+                  return operation(*args, **kwargs)
 
               def ensure_ct(self):
-                  raise AssertionError("Нельзя создавать 990 до завершения предварительных проверок")
+                  self.events.append("create-990")
 
-          with tempfile.TemporaryDirectory() as tmp:
-              original = module.HOST_MANAGER_CONFIG
-              try:
-                  module.HOST_MANAGER_CONFIG = Path(tmp) / "absent.json"
-                  occupied = Harness(occupied=True)
-                  try:
-                      occupied.execute()
-                  except module.BootstrapError as exc:
-                      assert "уже занят" in str(exc), exc
-                  else:
-                      raise AssertionError("Публичный запуск не должен принимать существующий 910")
-                  assert occupied.events == ["require", "lock", "list:pct"], occupied.events
+              def ensure_running(self):
+                  self.events.append("start-990")
 
-                  empty = Harness()
-                  empty.execute()
-                  assert empty.events == ["require", "lock", "list:pct", "list:qm", "log", "info", "new-key"], empty.events
+              def ensure_apt_dns(self):
+                  self.events.append("apt-dns")
 
-                  failed = Harness(invalid_list=True)
-                  try:
-                      failed.execute()
-                  except module.BootstrapError:
-                      pass
-                  else:
-                      raise AssertionError("Ошибка PVE не должна восприниматься как отсутствие гостя")
-                  assert "new-key" not in failed.events and "log" not in failed.events
+              def prepare_git(self):
+                  self.events.append("git")
 
-                  # Старый внутренний помощник ещё может передать скрытый --recover.
-                  recovering = Harness(occupied=True, recovering=True)
-                  recovering.execute()
-                  assert recovering.events == ["require", "lock", "log", "info", "new-key"], recovering.events
+              def checkout_project(self):
+                  self.events.append("checkout")
 
-                  module.HOST_MANAGER_CONFIG.write_text(json.dumps({"vmid": 911}))
-                  changed = Harness()
-                  changed.execute()
-                  assert changed.events[-1] == "new-key"
-              finally:
-                  module.HOST_MANAGER_CONFIG = original
+              def run_private_bootstrap(self):
+                  self.events.append("delegate:" + ",".join(self.forward_args))
+
+          expected = [
+              "require", "lock", "log", "info", "key", "create-990", "start-990",
+              "apt-dns", "git", "checkout",
+          ]
+          # И обычный режим, и восстановление проходят через один и тот же 990.
+          for recovering in (False, True):
+              host = Harness(recovering=recovering)
+              host.execute()
+              assert host.events == expected + [
+                  "delegate:--recover" if recovering else "delegate:"
+              ], host.events
 
           original_argv, original_env = sys.argv, os.environ.get("PROXMOX_BOOTSTRAP_INTERNAL_RECOVERY")
           try:
