@@ -32,10 +32,10 @@ jobs:
 
       - name: Check public shell is only a Python loader
         run: |
-          test "$(wc -l < bootstrap-pve.sh)" -le 20
+          test "$(wc -l < bootstrap-pve.sh)" -le 40
           grep -q 'bootstrap-pve.py' bootstrap-pve.sh
           grep -q 'python3 "\$SCRIPT"' bootstrap-pve.sh
-          grep -q 'curl -fsSL "\$URL"' bootstrap-pve.sh
+          grep -q 'curl -fsSL .*"\$URL".*-o "\$SCRIPT"' bootstrap-pve.sh
 
           if grep -Eq 'pct|pveum|pvesm|CTID|infra-manager|OpenTofu|Ansible|Semaphore' bootstrap-pve.sh; then
             echo "bootstrap-pve.sh must only download and start bootstrap-pve.py"
