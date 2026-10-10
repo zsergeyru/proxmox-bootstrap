@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import fcntl
-import json
 import os
 import re
 import shutil
@@ -27,7 +26,7 @@ CT_STORAGE = "local-lvm"
 CT_BRIDGE = "vmbr0"
 TEMPLATE_STORAGE = "local"
 
-# Закрытый проект содержит всю оркестрацию 910 и политику PVE-доступа.
+# Вся проектная оркестрация и политика доступа находятся в основном репозитории.
 PROJECT_REPO = "git@github.com:zsergeyru/proxmox.git"
 PROJECT_DIR = Path("/var/lib/bootstrap-runner/project")
 PRIVATE_ROOT = PROJECT_DIR / "scripts/bootstrap-runner"
@@ -41,8 +40,6 @@ HOST_GITHUB_KEY = HOST_BOOTSTRAP_DIR / "github_proxmox_repo_ed25519"
 HOST_GITHUB_PUB = Path(f"{HOST_GITHUB_KEY}.pub")
 HOST_TEMPLATE_MARKER = HOST_BOOTSTRAP_DIR / "debian13-template.ref"
 HOST_LOG_FILE = Path("/var/log/proxmox-bootstrap.log")
-HOST_MANAGER_CONFIG = Path("/etc/infra-manager/openbao-host.json")
-DEFAULT_MANAGER_VMID = 910
 LOCK_FILE = Path("/run/lock/proxmox-bootstrap.lock")
 
 CT_GITHUB_KEY = Path("/root/.ssh/github_proxmox_repo_ed25519")
@@ -225,36 +222,6 @@ class PublicBootstrap:
         with HOST_LOG_FILE.open("a", encoding="utf-8") as log:
             log.write(f"\n===== Public Bootstrap {VERSION} =====\n")
 
-    def refuse_existing_manager(self) -> None:
-        """Не создавать 990, если управляющий гость уже существует."""
-        if "--recover" in self.forward_args:
-            # Единственный разрешённый путь пересоздания существующего гостя:
-            # внутренний вызов от PVE-only аварийного помощника.
-            return
-
-        vmid = DEFAULT_MANAGER_VMID
-        if HOST_MANAGER_CONFIG.exists():
-            try:
-                data = json.loads(HOST_MANAGER_CONFIG.read_text(encoding="utf-8"))
-            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-                self.fail(f"Повреждена конфигурация infra-manager: {HOST_MANAGER_CONFIG}: {exc}")
-            if not isinstance(data, dict) or type(data.get("vmid")) is not int or data["vmid"] <= 0:
-                self.fail(f"Некорректный VMID в {HOST_MANAGER_CONFIG}")
-            vmid = data["vmid"]
-
-        # Не маскировать сбои PVE под отсутствие гостя: pct/qm list должны
-        # успешно отработать до любых изменяющих действий bootstrap.
-        for tool in ("pct", "qm"):
-            result = self.run(tool, "list", capture=True)
-            for row in result.stdout.splitlines()[1:]:
-                fields = row.split()
-                if fields and fields[0] == str(vmid):
-                    self.fail(
-                        f"VMID {vmid} уже занят; публичный установщик не изменяет "
-                        "существующий объект. Используйте infra-manager status, "
-                        "deploy или recover на PVE."
-                    )
-
     def ensure_host_github_key(self) -> bool:
         # Первый запуск только создаёт ключ. 990 появится уже после того,
         # как пользователь добавит открытый ключ в GitHub.
@@ -271,7 +238,7 @@ class PublicBootstrap:
                 "-N",
                 "",
                 "-C",
-                "infra-manager-readonly-zsergeyru-proxmox",
+                "proxmox-bootstrap-readonly-zsergeyru-proxmox",
                 "-f",
                 str(HOST_GITHUB_KEY),
             )
@@ -664,7 +631,6 @@ class PublicBootstrap:
         try:
             self.require_pve()
             self.acquire_lock()
-            self.refuse_existing_manager()
             self.init_log()
             self.info(f"Public Bootstrap {VERSION}")
 
