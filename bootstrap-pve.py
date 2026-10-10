@@ -1,4 +1,16 @@
 #!/usr/bin/env python3
+"""Первоначальная точка входа Proxmox: подготовка временного LXC 990.
+
+Проверяет возможность запуска на PVE, обеспечивает доступ к GitHub, создаёт
+чистый временный 990, получает основной проект и передаёт управление его
+закрытому исполнителю. Не определяет состояние постоянных гостей и не
+принимает решений об их создании, удалении или восстановлении.
+
+При повторном запуске прежний 990 можно удалить только после подтверждения
+его принадлежности и отсутствия посторонних подключений. Данные GitHub-доступа
+на PVE сохраняются; подробности ошибок записываются в технический журнал.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -52,6 +64,8 @@ GITHUB_ED25519_KNOWN_HOST = "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMq
 
 
 class BootstrapError(RuntimeError):
+    """Ожидаемая ошибка загрузчика с сообщением для пользователя."""
+
     pass
 
 
@@ -62,7 +76,10 @@ def version_sort_key(value: str) -> tuple[object, ...]:
 
 
 class PublicBootstrap:
+    """Управлять временным 990 и передачей управления основному проекту."""
+
     def __init__(self, project_branch: str, forward_args: list[str]) -> None:
+        """Сохранить параметры запуска и подготовить счётчики времени и вывод."""
         self.project_branch = project_branch
         self.forward_args = forward_args
         self.color = not os.environ.get("NO_COLOR") and os.environ.get("TERM") != "dumb"
@@ -91,12 +108,14 @@ class PublicBootstrap:
         self._section_title = None
 
     def log(self, message: str) -> None:
+        """Начать новый раздел журнала и завершить предыдущий."""
         self.finish_section()
         self._section_title = message
         self._section_started = time.monotonic()
         print(f"\n{self.c_bold}{self.c_blue}==> {message}{self.c_reset}")
 
     def ok(self, message: str) -> None:
+        """Показать успешный шаг и время, если вызов измеряется."""
         if self._active_timing is not None:
             _, started = self._active_timing
             message = f"{message:<55} ({self.format_duration(time.monotonic() - started)})"
@@ -104,13 +123,16 @@ class PublicBootstrap:
         print(f"{self.c_bold}{self.c_green}[ОК]{self.c_reset} {message}")
 
     def info(self, message: str) -> None:
+        """Вывести обычное информационное сообщение без изменения состояния."""
         print(f"{self.c_bold}{self.c_cyan}[ИНФО]{self.c_reset} {message}")
 
     def fail(self, message: str) -> None:
+        """Прервать текущий этап понятной ошибкой BootstrapError."""
         raise BootstrapError(message)
 
     @staticmethod
     def format_duration(seconds: float) -> str:
+        """Представить длительность в минутах и секундах либо часах."""
         total = max(0, int(seconds))
         hours, remainder = divmod(total, 3600)
         minutes, remaining = divmod(remainder, 60)
@@ -146,6 +168,12 @@ class PublicBootstrap:
         capture: bool = False,
         env: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
+        """Выполнить внешнюю команду на PVE и проверить её результат.
+        
+                quiet направляет вывод в защищённый журнал; capture возвращает вывод
+                вызывающему коду; check определяет, считать ли ненулевой код ошибкой;
+                env добавляет переменные окружения. При ошибке тихой команды выводятся
+                последние строки журнала. В аргументах не должно быть секретов."""
         command_env = os.environ.copy()
         if env:
             command_env.update(env)
@@ -189,6 +217,7 @@ class PublicBootstrap:
         return result
 
     def show_log_tail(self) -> None:
+        """Показать последние строки журнала для диагностики ошибки команды."""
         print("Последние строки технического журнала:", file=sys.stderr)
         try:
             for line in HOST_LOG_FILE.read_text(errors="replace").splitlines()[-30:]:
@@ -198,6 +227,7 @@ class PublicBootstrap:
         print(f"Полный журнал: {HOST_LOG_FILE}", file=sys.stderr)
 
     def require_pve(self) -> None:
+        """Проверить права root и наличие необходимых программ PVE."""
         if os.geteuid() != 0:
             self.fail("сценарий должен выполняться от root на PVE")
         for command in (
@@ -213,6 +243,10 @@ class PublicBootstrap:
                 self.fail(f"не найден {command}")
 
     def acquire_lock(self) -> None:
+        """Не допустить параллельного запуска двух загрузчиков.
+        
+                Неблокирующий flock защищает операции над одним и тем же LXC 990.
+                При занятой блокировке выполнение прекращается без изменений."""
         LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
         self._lock_handle = LOCK_FILE.open("a+")
         try:
@@ -221,6 +255,7 @@ class PublicBootstrap:
             self.fail("другой bootstrap уже выполняется")
 
     def init_log(self) -> None:
+        """Подготовить защищённый журнал текущего запуска на PVE."""
         HOST_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
         HOST_LOG_FILE.touch()
         HOST_LOG_FILE.chmod(0o600)
@@ -228,6 +263,11 @@ class PublicBootstrap:
             log.write(f"\n===== Public Bootstrap {VERSION} =====\n")
 
     def ensure_host_github_key(self) -> bool:
+        """Проверить постоянный GitHub Deploy Key и вернуть признак его создания.
+        
+                Первый запуск лишь создаёт пару ключей и показывает публичный ключ
+                для регистрации в GitHub. До регистрации 990 не создаётся.
+                Закрытый ключ не выводится и не передаётся через сообщения."""
         # Первый запуск только создаёт ключ. 990 появится уже после того,
         # как пользователь добавит открытый ключ в GitHub.
         HOST_BOOTSTRAP_DIR.mkdir(parents=True, exist_ok=True)
@@ -270,11 +310,13 @@ class PublicBootstrap:
         return created
 
     def pct(self, *args: str, **kwargs) -> subprocess.CompletedProcess[str]:
+        """Выполнить команду pct на физическом PVE."""
         return self.run("pct", *args, **kwargs)
 
     def ct_exec(
         self, *args: str, quiet: bool = False, check: bool = True
     ) -> subprocess.CompletedProcess[str]:
+        """Выполнить команду внутри временного 990 через pct exec."""
         return self.run(
             "pct",
             "exec",
@@ -286,12 +328,19 @@ class PublicBootstrap:
         )
 
     def ct_exists(self) -> bool:
+        """Проверить наличие контейнера с зарезервированным номером 990."""
         return self.pct("config", str(CTID), check=False, capture=True).returncode == 0
 
     def pct_config(self) -> str:
+        """Прочитать конфигурацию LXC 990 на физическом PVE."""
         return self.pct("config", str(CTID), capture=True).stdout
 
     def assert_owned_ct(self) -> None:
+        """Подтвердить принадлежность 990 публичному загрузчику до удаления.
+        
+                Проверить имя, точные метки и признаки владения в описании.
+                При дополнительных подключениях или скрипте запуска отказать:
+                такой контейнер не должен удаляться автоматически."""
         if not self.ct_exists():
             self.fail(f"LXC {CTID} отсутствует")
         config = self.pct_config()
@@ -326,6 +375,7 @@ class PublicBootstrap:
             )
 
     def find_local_template(self) -> str | None:
+        """Найти новейший доступный локальный шаблон Debian 13."""
         result = self.run(
             "pvesm",
             "list",
@@ -348,6 +398,10 @@ class PublicBootstrap:
         return max(matches, key=version_sort_key) if matches else None
 
     def ensure_template(self) -> str:
+        """Получить шаблон Debian 13, если он ещё не сохранён на PVE.
+        
+                Подготовка проводится до возможного удаления старого 990, чтобы
+                ошибка скачивания не уничтожила оставшуюся временную среду."""
         template = self.find_local_template()
         if template:
             return template
@@ -380,6 +434,10 @@ class PublicBootstrap:
         return ref
 
     def create_ct(self, template_ref: str) -> None:
+        """Создать новый временный LXC 990 с известной конфигурацией.
+        
+                Установить непостоянный диск, сеть, метки владения и отключить
+                автозапуск. Остальные номера VM/LXC не затрагиваются."""
         self.log(f"Создание временного LXC {CTID}")
 
         # Параметр и его значение держим рядом: так команду pct можно читать
@@ -405,6 +463,12 @@ class PublicBootstrap:
         self.ok(f"LXC {CTID} создан")
 
     def ensure_ct(self) -> None:
+        """Создать чистый 990 вместо повторного использования предыдущего.
+        
+                Сначала обеспечить наличие шаблона, затем проверить принадлежность
+                прежнего 990 и отсутствие дополнительных подключений. Только после
+                проверок остановить и удалить прежний контейнер. Ошибка удаления
+                прекращает запуск; новый контейнер не создаётся поверх старого."""
         # Не удалять старый 990, пока не подготовлен шаблон для нового.
         template_ref = self.ensure_template()
         if self.ct_exists():
@@ -423,6 +487,10 @@ class PublicBootstrap:
         self.create_ct(template_ref)
 
     def ensure_running(self) -> None:
+        """Запустить новый 990 и дождаться готовности сети.
+        
+                Проверить маршрут по умолчанию и DNS для GitHub. Ограничить число
+                попыток, чтобы при неисправности сети вывести понятную ошибку."""
         status = self.pct("status", str(CTID), capture=True).stdout.split()
         if not status or status[-1] != "running":
             self.run("pct", "start", str(CTID), quiet=True)
@@ -442,6 +510,10 @@ class PublicBootstrap:
         self.fail(f"сеть LXC {CTID} не готова")
 
     def ensure_apt_dns(self) -> None:
+        """Проверить сетевой доступ к репозиториям Debian от пользователя _apt.
+        
+                Ошибочные права /etc исправляются только внутри временного 990.
+                Проверка нужна до установки пакетов и не затрагивает PVE."""
         """Проверить права /etc и разрешение DNS именно от пользователя _apt."""
 
         mode = self.run(
@@ -467,6 +539,7 @@ class PublicBootstrap:
         self.ok(f"LXC {CTID}: DNS для APT проверен от пользователя _apt")
 
     def push_file(self, source: Path, target: Path, mode: str) -> None:
+        """Передать файл из PVE в 990 с явно заданными владельцем и правами."""
         # Все файлы передаются в 990 от root с явно заданными правами.
         push_args = [
             "push", str(CTID), str(source), str(target),
@@ -477,6 +550,10 @@ class PublicBootstrap:
         self.pct(*push_args)
 
     def prepare_git_access(self) -> None:
+        """Создать внутри 990 временный SSH-доступ к GitHub.
+        
+                Копируется только ключ чтения проекта; ключ сервера GitHub закреплён
+                заранее, чтобы не доверять произвольному ответу при первом соединении."""
         # В 990 копируется только ключ чтения закрытого проекта.
         self.ct_exec("install", "-d", "-m", "0700", "/root/.ssh")
         self.push_file(HOST_GITHUB_KEY, CT_GITHUB_KEY, "0600")
@@ -508,6 +585,9 @@ class PublicBootstrap:
             config_file.unlink(missing_ok=True)
 
     def prepare_git(self) -> None:
+        """Установить Git, SSH и необходимые пакеты внутри 990.
+        
+                На физическом PVE дополнительные программы не устанавливаются."""
         self.log("Подготовка доступа к закрытому проекту")
 
         # На физический PVE Git не устанавливаем. Он нужен только внутри 990.
@@ -537,6 +617,10 @@ class PublicBootstrap:
         self.prepare_git_access()
 
     def checkout_project(self) -> None:
+        """Получить выбранную ветку основного проекта в чистом 990.
+        
+                Контейнер всегда новый, поэтому используется только git clone.
+                При отсутствии закрытой точки входа выполнение прекращается."""
         git_ssh = f"ssh -F {CT_GITHUB_CONFIG}"
         if self.ct_exec("test", "-d", str(PROJECT_DIR / ".git"), check=False).returncode == 0:
             self.ct_exec(
@@ -576,6 +660,11 @@ class PublicBootstrap:
         self.ok(f"Закрытый проект получен внутри LXC {CTID}")
 
     def run_private_bootstrap(self) -> None:
+        """Передать управление исполнителю из основного проекта.
+        
+                Внутри 990 создать архив закрытого исполнителя, временно извлечь
+                его на PVE и запустить оттуда с ограниченным набором переменных.
+                Временные файлы на PVE удаляются после завершения вызова."""
         # Закрытый bootstrap состоит из точки входа и соседнего Python-пакета.
         # На PVE весь каталог переносится только на время текущего запуска.
         with tempfile.TemporaryDirectory(
@@ -633,6 +722,11 @@ class PublicBootstrap:
             self.run("python3", str(helper), *self.forward_args, env=env)
 
     def execute(self) -> None:
+        """Выполнить полный первоначальный путь и передать управление.
+        
+                Блокировка удерживается на протяжении всех этапов; первая генерация
+                GitHub-ключа завершает работу до создания контейнера. При сбое
+                последнего этапа временный 990 может остаться для диагностики."""
         # Публичная часть заканчивается сразу после передачи управления
         # закрытому сценарию bootstrap-host.py.
         try:
@@ -665,6 +759,10 @@ class PublicBootstrap:
 
 
 def parse_args() -> argparse.Namespace:
+    """Разобрать ветку проекта и признак аварийного восстановления.
+    
+        Восстановление лишь передаётся закрытому исполнителю: публичная
+        часть не исследует состояние постоянных гостей."""
     parser = argparse.ArgumentParser(
         description="Минимальная публичная точка входа для закрытого Proxmox bootstrap."
     )
@@ -689,6 +787,10 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
+    """Запустить загрузчик и преобразовать ошибки в понятный оператору вывод.
+    
+        Ожидаемые ошибки выводятся без стека, непредвиденные подробности
+        сохраняются в техническом журнале."""
     args = parse_args()
     try:
         PublicBootstrap(args.project_branch, args.forward_args).execute()
