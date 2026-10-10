@@ -312,7 +312,7 @@ class PublicBootstrap:
         # Не удалять контейнер, к которому могли вручную подключить данные.
         unsafe = [
             line.split(":", 1)[0] for line in config.splitlines()
-            if re.fullmatch(r"(?:mp|unused|dev)\\d+", line.split(":", 1)[0])
+            if re.fullmatch(r"(?:mp|unused|dev)\d+", line.split(":", 1)[0])
             or line.startswith("hookscript:")
         ]
         if unsafe:
