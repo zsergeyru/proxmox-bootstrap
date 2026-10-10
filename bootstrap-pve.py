@@ -730,11 +730,11 @@ class PublicBootstrap:
             self.require_pve()
             self.acquire_lock()
             self.init_log()
+            cleanup_allowed = True
             self.info(f"Public Bootstrap {VERSION}")
 
             if self.ensure_host_github_key():
                 return
-            cleanup_allowed = True
 
             self.timed_step("Подготовка LXC 990", self.ensure_ct)
             self.timed_step("Запуск LXC 990", self.ensure_running)

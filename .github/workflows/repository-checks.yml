@@ -321,11 +321,12 @@ jobs:
           class Harness(module.PublicBootstrap):
               """Имитация отказа до запуска закрытой части и владения 990."""
 
-              def __init__(self, *, foreign=False, fail_before_checkout=False):
+              def __init__(self, *, foreign=False, fail_before_checkout=False, fail_key=False):
                   """Подготовить искусственный одноразовый контейнер."""
                   super().__init__("main", [])
                   self.foreign = foreign
                   self.fail_before_checkout = fail_before_checkout
+                  self.fail_key = fail_key
                   self.present = True
                   self.events = []
 
@@ -354,7 +355,9 @@ jobs:
                   pass
 
               def ensure_host_github_key(self):
-                  """Ключ уже зарегистрирован."""
+                  """Ключ уже зарегистрирован либо его подготовка прервалась."""
+                  if self.fail_key:
+                      raise module.BootstrapError("ошибка ключа GitHub")
                   return False
 
               def ensure_ct(self):
@@ -401,12 +404,16 @@ jobs:
                       self.present = False
                   return SimpleNamespace(stdout="", returncode=0)
 
-          for early in (False, True):
-              host = Harness(fail_before_checkout=early)
+          for early, fail_key in ((False, False), (True, False), (False, True)):
+              host = Harness(fail_before_checkout=early, fail_key=fail_key)
               try:
                   host.execute()
               except module.BootstrapError as exc:
-                  assert ("APT недоступен" if early else "ошибка проекта") in str(exc), exc
+                  expected_error = (
+                      "ошибка ключа GitHub" if fail_key else
+                      "APT недоступен" if early else "ошибка проекта"
+                  )
+                  assert expected_error in str(exc), exc
               else:
                   raise AssertionError("Ожидаемый отказ не произошёл")
               assert not host.present, host.events
