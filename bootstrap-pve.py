@@ -296,7 +296,10 @@ class PublicBootstrap:
             self.fail(f"LXC {CTID} отсутствует")
         config = self.pct_config()
         if f"hostname: {CT_HOSTNAME}\n" not in f"{config}\n":
-            self.fail(f"LXC {CTID} не принадлежит bootstrap")
+            self.fail(
+                f"LXC {CTID}: имя не равно {CT_HOSTNAME}. "
+                "Контейнер не изменён; проверьте pct config 990."
+            )
         tags = next((line for line in config.splitlines() if line.startswith("tags:")), "")
         description = next(
             (line for line in config.splitlines() if line.startswith("description:")), ""
@@ -402,6 +405,8 @@ class PublicBootstrap:
         self.ok(f"LXC {CTID} создан")
 
     def ensure_ct(self) -> None:
+        # Не удалять старый 990, пока не подготовлен шаблон для нового.
+        template_ref = self.ensure_template()
         if self.ct_exists():
             self.assert_owned_ct()
             self.log(f"Удаление предыдущего временного LXC {CTID}")
@@ -415,7 +420,7 @@ class PublicBootstrap:
                     "и технический журнал перед повторным запуском."
                 )
             self.ok(f"Предыдущий LXC {CTID} удалён")
-        self.create_ct(self.ensure_template())
+        self.create_ct(template_ref)
 
     def ensure_running(self) -> None:
         status = self.pct("status", str(CTID), capture=True).stdout.split()
