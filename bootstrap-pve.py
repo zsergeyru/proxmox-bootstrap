@@ -166,7 +166,9 @@ class PublicBootstrap:
             if check and result.returncode:
                 self.show_log_tail()
                 self.fail(
-                    f"команда завершилась с кодом {result.returncode}: {' '.join(args)}"
+                    f"Не удалось выполнить {' '.join(args)} (код {result.returncode}). "
+                    f"Причина указана выше; полный журнал: {HOST_LOG_FILE}. "
+                    "Исправьте ошибку и повторите запуск."
                 )
             return result
 
@@ -180,7 +182,10 @@ class PublicBootstrap:
         if check and result.returncode:
             if capture and result.stderr:
                 print(result.stderr.rstrip(), file=sys.stderr)
-            self.fail(f"команда завершилась с кодом {result.returncode}: {' '.join(args)}")
+            self.fail(
+                f"Не удалось выполнить {' '.join(args)} (код {result.returncode}). "
+                f"Проверьте результат команды и журнал {HOST_LOG_FILE}."
+            )
         return result
 
     def show_log_tail(self) -> None:
@@ -286,48 +291,39 @@ class PublicBootstrap:
     def pct_config(self) -> str:
         return self.pct("config", str(CTID), capture=True).stdout
 
-    def config_value(self, key: str) -> str:
-        prefix = f"{key}: "
-        for line in self.pct_config().splitlines():
-            if line.startswith(prefix):
-                return line[len(prefix) :]
-        return ""
-
     def assert_owned_ct(self) -> None:
         if not self.ct_exists():
             self.fail(f"LXC {CTID} отсутствует")
         config = self.pct_config()
         if f"hostname: {CT_HOSTNAME}\n" not in f"{config}\n":
-            self.fail(f"LXC {CTID} не принадлежит bootstrap")
+            self.fail(
+                f"LXC {CTID}: имя не равно {CT_HOSTNAME}. "
+                "Контейнер не изменён; проверьте pct config 990."
+            )
         tags = next((line for line in config.splitlines() if line.startswith("tags:")), "")
         description = next(
             (line for line in config.splitlines() if line.startswith("description:")), ""
         )
-        if "bootstrap-runner" not in tags:
-            self.fail(f"LXC {CTID} не принадлежит bootstrap")
-        if "managed-by=proxmox-bootstrap" not in description:
-            self.fail(f"LXC {CTID} не принадлежит bootstrap")
-
-    def verify_ct_contract(self) -> None:
-        self.assert_owned_ct()
-        expected = {
-            "unprivileged": "1",
-            "cores": str(CT_CORES),
-            "memory": str(CT_MEMORY_MB),
-            "swap": str(CT_SWAP_MB),
-            "onboot": "0",
-        }
-        for key, value in expected.items():
-            if self.config_value(key) != value:
-                self.fail(f"LXC {CTID}: неверное значение {key}")
-
-        rootfs = self.config_value("rootfs")
-        if not rootfs.startswith(f"{CT_STORAGE}:") or f"size={CT_DISK_GB}G" not in rootfs:
-            self.fail(f"LXC {CTID}: неверный rootfs")
-
-        net0 = self.config_value("net0")
-        if f"bridge={CT_BRIDGE}" not in net0:
-            self.fail(f"LXC {CTID}: неверный bridge")
+        if "bootstrap-runner" not in tags.removeprefix("tags:").strip().split(";"):
+            self.fail(f"LXC {CTID}: отсутствует метка bootstrap-runner. Контейнер не изменён.")
+        if "proxmox-bootstrap" not in tags.removeprefix("tags:").strip().split(";"):
+            self.fail(f"LXC {CTID}: отсутствует метка proxmox-bootstrap. Контейнер не изменён.")
+        if "managed-by=proxmox-bootstrap" not in description.split():
+            self.fail(f"LXC {CTID}: отсутствует признак владения в описании. Контейнер не изменён.")
+        if "role=bootstrap-runner" not in description.split():
+            self.fail(f"LXC {CTID}: неверная роль в описании. Контейнер не изменён.")
+        # Не удалять контейнер, к которому могли вручную подключить данные.
+        unsafe = [
+            line.split(":", 1)[0] for line in config.splitlines()
+            if re.fullmatch(r"(?:mp|unused|dev)\d+", line.split(":", 1)[0])
+            or line.startswith("hookscript:")
+        ]
+        if unsafe:
+            self.fail(
+                f"LXC {CTID}: обнаружены дополнительные подключения "
+                f"({', '.join(unsafe)}). Автоматическое удаление запрещено; "
+                "проверьте pct config 990 и разберите подключения вручную."
+            )
 
     def find_local_template(self) -> str | None:
         result = self.run(
@@ -409,11 +405,22 @@ class PublicBootstrap:
         self.ok(f"LXC {CTID} создан")
 
     def ensure_ct(self) -> None:
+        # Не удалять старый 990, пока не подготовлен шаблон для нового.
+        template_ref = self.ensure_template()
         if self.ct_exists():
             self.assert_owned_ct()
-        else:
-            self.create_ct(self.ensure_template())
-        self.verify_ct_contract()
+            self.log(f"Удаление предыдущего временного LXC {CTID}")
+            status = self.pct("status", str(CTID), capture=True).stdout.strip()
+            if status.endswith("running"):
+                self.pct("stop", str(CTID), quiet=True)
+            self.pct("destroy", str(CTID), "--purge", "1", quiet=True)
+            if self.ct_exists():
+                self.fail(
+                    f"LXC {CTID} не удалён. Проверьте pct status {CTID} "
+                    "и технический журнал перед повторным запуском."
+                )
+            self.ok(f"Предыдущий LXC {CTID} удалён")
+        self.create_ct(template_ref)
 
     def ensure_running(self) -> None:
         status = self.pct("status", str(CTID), capture=True).stdout.split()
@@ -685,10 +692,33 @@ def main() -> int:
     args = parse_args()
     try:
         PublicBootstrap(args.project_branch, args.forward_args).execute()
-    except BootstrapError as exc:
+    except (BootstrapError, OSError, subprocess.SubprocessError) as exc:
         color = not os.environ.get("NO_COLOR") and os.environ.get("TERM") != "dumb"
         prefix = "\033[1;31mОШИБКА:\033[0m" if color else "ОШИБКА:"
         print(f"\n{prefix} {exc}", file=sys.stderr)
+        print(
+            f"Действие: проверьте доступность PVE, сеть и журнал {HOST_LOG_FILE}; "
+            "после устранения причины повторите запуск.",
+            file=sys.stderr,
+        )
+        return 1
+    except Exception as exc:
+        # Не выводить оператору стек вызовов; детали сохранять для диагностики.
+        import traceback
+
+        HOST_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with HOST_LOG_FILE.open("a", encoding="utf-8") as log:
+            traceback.print_exc(file=log)
+        print(
+            f"ОШИБКА: Неожиданный сбой публичного загрузчика: {exc}.",
+            file=sys.stderr,
+        )
+        print(
+            f"Действие: проверьте журнал {HOST_LOG_FILE} и повторите запуск "
+            "после устранения причины. Контейнеры с неподтверждённой "
+            "принадлежностью автоматически не удаляются.",
+            file=sys.stderr,
+        )
         return 1
     return 0
 
