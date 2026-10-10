@@ -305,6 +305,128 @@ jobs:
               module.HOST_TEMPLATE_MARKER = original_marker
           PY
 
+      - name: Verify early failure cleans up owned 990
+        run: |
+          python3 - <<'PY'
+          import contextlib
+          import importlib.util
+          import io
+          from pathlib import Path
+          from types import SimpleNamespace
+
+          spec = importlib.util.spec_from_file_location("public_bootstrap", Path("bootstrap-pve.py"))
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+
+          class Harness(module.PublicBootstrap):
+              """Имитация отказа до запуска закрытой части и владения 990."""
+
+              def __init__(self, *, foreign=False, fail_before_checkout=False):
+                  """Подготовить искусственный одноразовый контейнер."""
+                  super().__init__("main", [])
+                  self.foreign = foreign
+                  self.fail_before_checkout = fail_before_checkout
+                  self.present = True
+                  self.events = []
+
+              def require_pve(self):
+                  """Проверка хоста не нужна в испытании."""
+                  pass
+
+              def acquire_lock(self):
+                  """Блокировку PVE подменить."""
+                  pass
+
+              def init_log(self):
+                  """Не изменять системный журнал."""
+                  pass
+
+              def info(self, message):
+                  """Сохранить сообщение."""
+                  pass
+
+              def ok(self, message):
+                  """Сохранить завершённое действие."""
+                  pass
+
+              def finish_section(self, *, interrupted=False):
+                  """Не писать реальный журнал."""
+                  pass
+
+              def ensure_host_github_key(self):
+                  """Ключ уже зарегистрирован."""
+                  return False
+
+              def ensure_ct(self):
+                  """990 уже создан."""
+                  self.events.append("create")
+
+              def ensure_running(self):
+                  """990 запущен."""
+                  pass
+
+              def ensure_apt_dns(self):
+                  """Сеть доступна."""
+                  pass
+
+              def prepare_git(self):
+                  """Имитировать ранний отказ до получения проекта."""
+                  if self.fail_before_checkout:
+                      raise module.BootstrapError("APT недоступен")
+
+              def checkout_project(self):
+                  """Закрытый проект получен."""
+                  pass
+
+              def run_private_bootstrap(self):
+                  """Имитировать отказ закрытой части без очистки 990."""
+                  raise module.BootstrapError("ошибка проекта")
+
+              def ct_exists(self):
+                  """Показать наличие временного LXC."""
+                  return self.present
+
+              def assert_owned_ct(self):
+                  """Отвергнуть попытку удалить чужой контейнер."""
+                  self.events.append("verify_owner")
+                  if self.foreign:
+                      raise module.BootstrapError("чужой контейнер")
+
+              def pct(self, *args, **kwargs):
+                  """Разрешить stop/destroy только после проверки владельца."""
+                  self.events.append(" ".join(args))
+                  if args[0] == "status":
+                      return SimpleNamespace(stdout="status: running", returncode=0)
+                  if args[0] == "destroy":
+                      self.present = False
+                  return SimpleNamespace(stdout="", returncode=0)
+
+          for early in (False, True):
+              host = Harness(fail_before_checkout=early)
+              try:
+                  host.execute()
+              except module.BootstrapError as exc:
+                  assert ("APT недоступен" if early else "ошибка проекта") in str(exc), exc
+              else:
+                  raise AssertionError("Ожидаемый отказ не произошёл")
+              assert not host.present, host.events
+              assert host.events[-4:] == [
+                  "verify_owner", "status 990", "stop 990", "destroy 990 --purge 1"
+              ], host.events
+
+          foreign = Harness(foreign=True)
+          stderr = io.StringIO()
+          with contextlib.redirect_stderr(stderr):
+              try:
+                  foreign.execute()
+              except module.BootstrapError as exc:
+                  assert "ошибка проекта" in str(exc)
+              else:
+                  raise AssertionError("Первая ошибка не должна теряться")
+          assert foreign.present and "чужой контейнер" in stderr.getvalue()
+          assert not any(event.startswith(("stop", "destroy")) for event in foreign.events)
+          PY
+
       - name: Check persistent lock discipline
         run: |
           grep -q 'fcntl.LOCK_EX | fcntl.LOCK_NB' bootstrap-pve.py
