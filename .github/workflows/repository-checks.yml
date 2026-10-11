@@ -128,6 +128,10 @@ jobs:
               def run(self, *argv, **kwargs):
                   raise AssertionError(f"Публичный загрузчик не должен проверять другие ВМ/контейнеры: {argv}")
 
+              def remove_temporary_token(self):
+                  """Подменить проверку временного токена в испытании разделения ролей."""
+                  pass
+
               def ensure_host_github_key(self):
                   self.events.append("key")
                   return False
@@ -305,6 +309,72 @@ jobs:
               module.HOST_TEMPLATE_MARKER = original_marker
           PY
 
+      - name: Verify stale bootstrap token is revoked
+        run: |
+          python3 - <<'PY'
+          import importlib.util
+          import json
+          from pathlib import Path
+          from types import SimpleNamespace
+
+          spec = importlib.util.spec_from_file_location("bootstrap_pve", Path("bootstrap-pve.py"))
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+
+          class TokenHarness(module.PublicBootstrap):
+              """Подменить pveum для проверки точного имени временного токена."""
+
+              def __init__(self, tokens):
+                  """Создать заданный список токенов PVE."""
+                  super().__init__("main", [])
+                  self.tokens = tokens
+                  self.calls = []
+
+              def run(self, *args, **kwargs):
+                  """Вернуть список или удалить только временный токен."""
+                  self.calls.append(args)
+                  if args[:5] == ("pveum", "user", "token", "list", "root@pam"):
+                      return SimpleNamespace(stdout=json.dumps(
+                          [{"tokenid": token} for token in self.tokens]
+                      ), returncode=0)
+                  if args == ("pveum", "user", "token", "remove", "root@pam", "bootstrap-runner"):
+                      self.tokens.remove("bootstrap-runner")
+                      return SimpleNamespace(stdout="", returncode=0)
+                  raise AssertionError(f"Неожиданная команда PVE: {args!r}")
+
+              def ok(self, message):
+                  """Не печатать служебное сообщение в испытании."""
+                  pass
+
+          for initial in (
+              [],
+              ["infra-manager"],
+              ["bootstrap-runner"],
+              ["bootstrap-runner", "infra-manager"],
+          ):
+              host = TokenHarness(list(initial))
+              host.remove_temporary_token()
+              assert host.tokens == [x for x in initial if x != "bootstrap-runner"]
+              removes = [c for c in host.calls if c[:4] == ("pveum", "user", "token", "remove")]
+              assert len(removes) == int("bootstrap-runner" in initial), host.calls
+              if removes:
+                  assert removes[0][-2:] == ("root@pam", "bootstrap-runner")
+
+          class BadTokenHarness(TokenHarness):
+              """Вернуть некорректный ответ PVE."""
+
+              def run(self, *args, **kwargs):
+                  """Имитировать повреждение JSON ответа."""
+                  return SimpleNamespace(stdout="{}", returncode=0)
+
+          try:
+              BadTokenHarness([]).remove_temporary_token()
+          except module.BootstrapError:
+              pass
+          else:
+              raise AssertionError("Повреждённый ответ PVE нельзя считать отсутствием токена")
+          PY
+
       - name: Verify early failure cleans up owned 990
         run: |
           python3 - <<'PY'
@@ -385,6 +455,10 @@ jobs:
                   """Имитировать отказ закрытой части без очистки 990."""
                   raise module.BootstrapError("ошибка проекта")
 
+              def remove_temporary_token(self):
+                  """Сохранить проверку очистки токена без доступа к настоящему PVE."""
+                  self.events.append("revoke_token")
+
               def ct_exists(self):
                   """Показать наличие временного LXC."""
                   return self.present
@@ -432,6 +506,7 @@ jobs:
                   raise AssertionError("Первая ошибка не должна теряться")
           assert foreign.present and "чужой контейнер" in stderr.getvalue()
           assert not any(event.startswith(("stop", "destroy")) for event in foreign.events)
+          assert foreign.events.count("revoke_token") == 2
           PY
 
       - name: Check persistent lock discipline
