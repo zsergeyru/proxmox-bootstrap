@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import json
 import os
 import re
 import shutil
@@ -698,23 +699,66 @@ class PublicBootstrap:
             }
             self.run("python3", str(helper), *self.forward_args, env=env)
 
+    def remove_temporary_token(self) -> None:
+        """Отозвать оставшийся токен временного 990 перед новым запуском.
+
+        Публичная часть знает только имя токена одноразового контейнера;
+        доступы постоянного управляющего гостя она не меняет.
+        """
+        result = self.run(
+            "pveum", "user", "token", "list", "root@pam",
+            "--output-format", "json", capture=True,
+        )
+        try:
+            rows = json.loads(result.stdout)
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise BootstrapError("PVE вернул некорректный список временных токенов") from exc
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            self.fail("PVE вернул неожиданный формат списка временных токенов")
+        if any(row.get("tokenid") == "bootstrap-runner" for row in rows):
+            self.run("pveum", "user", "token", "remove", "root@pam", "bootstrap-runner")
+            self.ok("Оставшийся временный токен 990 отозван")
+
+    def remove_owned_ct_on_failure(self) -> None:
+        """Удалить только собственный одноразовый 990 после ранней ошибки.
+
+        Вызывается также при ошибке до запуска закрытого исполнителя, когда
+        тот ещё не мог отозвать временные доступы или удалить контейнер.
+        Проверка меток запрещает удаление постороннего или изменённого LXC.
+        """
+        if not self.ct_exists():
+            return
+        self.assert_owned_ct()
+        status = self.pct("status", str(CTID), capture=True).stdout.strip()
+        if status.endswith("running"):
+            self.pct("stop", str(CTID), quiet=True)
+        self.pct("destroy", str(CTID), "--purge", "1", quiet=True)
+        if self.ct_exists():
+            self.fail(f"Временный LXC {CTID} остался после ошибки")
+        self.ok(f"Одноразовый LXC {CTID} удалён после ошибки")
+
     def execute(self) -> None:
         """Выполнить полный первоначальный путь и передать управление.
 
         Блокировка удерживается на протяжении всех этапов; первая генерация
         GitHub-ключа завершает работу до создания контейнера. При сбое
-        последнего этапа временный 990 может остаться для диагностики."""
-        # Публичная часть заканчивается сразу после передачи управления
-        # закрытому сценарию bootstrap-host.py.
+        последнего этапа собственный 990 удаляется; журнал остаётся на PVE."""
+        # Публичная часть заканчивается после передачи управления
+        # закрытому сценарию bootstrap-host.py. 990 удаляется и при раннем
+        # отказе, когда закрытая часть ещё не запускалась.
+        cleanup_allowed = False
         try:
             self.require_pve()
             self.acquire_lock()
             self.init_log()
+            cleanup_allowed = True
             self.info(f"Public Bootstrap {VERSION}")
 
             if self.ensure_host_github_key():
                 return
 
+            # Токен мог остаться от аварийно прерванного прошлого запуска.
+            self.remove_temporary_token()
             self.timed_step("Подготовка LXC 990", self.ensure_ct)
             self.timed_step("Запуск LXC 990", self.ensure_running)
             self.timed_step("Проверка DNS для APT в 990", self.ensure_apt_dns)
@@ -723,6 +767,20 @@ class PublicBootstrap:
             self.timed_step("Закрытый bootstrap", self.run_private_bootstrap)
         except BaseException:
             self.finish_section(interrupted=True)
+            if cleanup_allowed:
+                # Отзыв токена и удаление контейнера не зависят друг от друга:
+                # одна ошибка очистки не должна скрывать другую.
+                for label, operation in (
+                    ("отозвать временный токен PVE", self.remove_temporary_token),
+                    (f"удалить временный LXC {CTID}", self.remove_owned_ct_on_failure),
+                ):
+                    try:
+                        operation()
+                    except Exception as cleanup_error:
+                        print(
+                            f"ОШИБКА: не удалось {label}: {cleanup_error}",
+                            file=sys.stderr,
+                        )
             raise
         else:
             self.finish_section()

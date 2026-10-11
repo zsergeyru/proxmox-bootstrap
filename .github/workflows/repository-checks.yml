@@ -32,10 +32,10 @@ jobs:
 
       - name: Check public shell is only a Python loader
         run: |
-          test "$(wc -l < bootstrap-pve.sh)" -le 20
+          test "$(wc -l < bootstrap-pve.sh)" -le 40
           grep -q 'bootstrap-pve.py' bootstrap-pve.sh
           grep -q 'python3 "\$SCRIPT"' bootstrap-pve.sh
-          grep -q 'curl -fsSL "\$URL"' bootstrap-pve.sh
+          grep -q 'curl -fsSL .*"\$URL".*-o "\$SCRIPT"' bootstrap-pve.sh
 
           if grep -Eq 'pct|pveum|pvesm|CTID|infra-manager|OpenTofu|Ansible|Semaphore' bootstrap-pve.sh; then
             echo "bootstrap-pve.sh must only download and start bootstrap-pve.py"
@@ -127,6 +127,10 @@ jobs:
 
               def run(self, *argv, **kwargs):
                   raise AssertionError(f"Публичный загрузчик не должен проверять другие ВМ/контейнеры: {argv}")
+
+              def remove_temporary_token(self):
+                  """Подменить проверку временного токена в испытании разделения ролей."""
+                  pass
 
               def ensure_host_github_key(self):
                   self.events.append("key")
@@ -303,6 +307,206 @@ jobs:
           finally:
               module.HOST_BOOTSTRAP_DIR = original_dir
               module.HOST_TEMPLATE_MARKER = original_marker
+          PY
+
+      - name: Verify stale bootstrap token is revoked
+        run: |
+          python3 - <<'PY'
+          import importlib.util
+          import json
+          from pathlib import Path
+          from types import SimpleNamespace
+
+          spec = importlib.util.spec_from_file_location("bootstrap_pve", Path("bootstrap-pve.py"))
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+
+          class TokenHarness(module.PublicBootstrap):
+              """Подменить pveum для проверки точного имени временного токена."""
+
+              def __init__(self, tokens):
+                  """Создать заданный список токенов PVE."""
+                  super().__init__("main", [])
+                  self.tokens = tokens
+                  self.calls = []
+
+              def run(self, *args, **kwargs):
+                  """Вернуть список или удалить только временный токен."""
+                  self.calls.append(args)
+                  if args[:5] == ("pveum", "user", "token", "list", "root@pam"):
+                      return SimpleNamespace(stdout=json.dumps(
+                          [{"tokenid": token} for token in self.tokens]
+                      ), returncode=0)
+                  if args == ("pveum", "user", "token", "remove", "root@pam", "bootstrap-runner"):
+                      self.tokens.remove("bootstrap-runner")
+                      return SimpleNamespace(stdout="", returncode=0)
+                  raise AssertionError(f"Неожиданная команда PVE: {args!r}")
+
+              def ok(self, message):
+                  """Не печатать служебное сообщение в испытании."""
+                  pass
+
+          for initial in (
+              [],
+              ["infra-manager"],
+              ["bootstrap-runner"],
+              ["bootstrap-runner", "infra-manager"],
+          ):
+              host = TokenHarness(list(initial))
+              host.remove_temporary_token()
+              assert host.tokens == [x for x in initial if x != "bootstrap-runner"]
+              removes = [c for c in host.calls if c[:4] == ("pveum", "user", "token", "remove")]
+              assert len(removes) == int("bootstrap-runner" in initial), host.calls
+              if removes:
+                  assert removes[0][-2:] == ("root@pam", "bootstrap-runner")
+
+          class BadTokenHarness(TokenHarness):
+              """Вернуть некорректный ответ PVE."""
+
+              def run(self, *args, **kwargs):
+                  """Имитировать повреждение JSON ответа."""
+                  return SimpleNamespace(stdout="{}", returncode=0)
+
+          try:
+              BadTokenHarness([]).remove_temporary_token()
+          except module.BootstrapError:
+              pass
+          else:
+              raise AssertionError("Повреждённый ответ PVE нельзя считать отсутствием токена")
+          PY
+
+      - name: Verify early failure cleans up owned 990
+        run: |
+          python3 - <<'PY'
+          import contextlib
+          import importlib.util
+          import io
+          from pathlib import Path
+          from types import SimpleNamespace
+
+          spec = importlib.util.spec_from_file_location("public_bootstrap", Path("bootstrap-pve.py"))
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+
+          class Harness(module.PublicBootstrap):
+              """Имитация отказа до запуска закрытой части и владения 990."""
+
+              def __init__(self, *, foreign=False, fail_before_checkout=False, fail_key=False):
+                  """Подготовить искусственный одноразовый контейнер."""
+                  super().__init__("main", [])
+                  self.foreign = foreign
+                  self.fail_before_checkout = fail_before_checkout
+                  self.fail_key = fail_key
+                  self.present = True
+                  self.events = []
+
+              def require_pve(self):
+                  """Проверка хоста не нужна в испытании."""
+                  pass
+
+              def acquire_lock(self):
+                  """Блокировку PVE подменить."""
+                  pass
+
+              def init_log(self):
+                  """Не изменять системный журнал."""
+                  pass
+
+              def info(self, message):
+                  """Сохранить сообщение."""
+                  pass
+
+              def ok(self, message):
+                  """Сохранить завершённое действие."""
+                  pass
+
+              def finish_section(self, *, interrupted=False):
+                  """Не писать реальный журнал."""
+                  pass
+
+              def ensure_host_github_key(self):
+                  """Ключ уже зарегистрирован либо его подготовка прервалась."""
+                  if self.fail_key:
+                      raise module.BootstrapError("ошибка ключа GitHub")
+                  return False
+
+              def ensure_ct(self):
+                  """990 уже создан."""
+                  self.events.append("create")
+
+              def ensure_running(self):
+                  """990 запущен."""
+                  pass
+
+              def ensure_apt_dns(self):
+                  """Сеть доступна."""
+                  pass
+
+              def prepare_git(self):
+                  """Имитировать ранний отказ до получения проекта."""
+                  if self.fail_before_checkout:
+                      raise module.BootstrapError("APT недоступен")
+
+              def checkout_project(self):
+                  """Закрытый проект получен."""
+                  pass
+
+              def run_private_bootstrap(self):
+                  """Имитировать отказ закрытой части без очистки 990."""
+                  raise module.BootstrapError("ошибка проекта")
+
+              def remove_temporary_token(self):
+                  """Сохранить проверку очистки токена без доступа к настоящему PVE."""
+                  self.events.append("revoke_token")
+
+              def ct_exists(self):
+                  """Показать наличие временного LXC."""
+                  return self.present
+
+              def assert_owned_ct(self):
+                  """Отвергнуть попытку удалить чужой контейнер."""
+                  self.events.append("verify_owner")
+                  if self.foreign:
+                      raise module.BootstrapError("чужой контейнер")
+
+              def pct(self, *args, **kwargs):
+                  """Разрешить stop/destroy только после проверки владельца."""
+                  self.events.append(" ".join(args))
+                  if args[0] == "status":
+                      return SimpleNamespace(stdout="status: running", returncode=0)
+                  if args[0] == "destroy":
+                      self.present = False
+                  return SimpleNamespace(stdout="", returncode=0)
+
+          for early, fail_key in ((False, False), (True, False), (False, True)):
+              host = Harness(fail_before_checkout=early, fail_key=fail_key)
+              try:
+                  host.execute()
+              except module.BootstrapError as exc:
+                  expected_error = (
+                      "ошибка ключа GitHub" if fail_key else
+                      "APT недоступен" if early else "ошибка проекта"
+                  )
+                  assert expected_error in str(exc), exc
+              else:
+                  raise AssertionError("Ожидаемый отказ не произошёл")
+              assert not host.present, host.events
+              assert host.events[-4:] == [
+                  "verify_owner", "status 990", "stop 990", "destroy 990 --purge 1"
+              ], host.events
+
+          foreign = Harness(foreign=True)
+          stderr = io.StringIO()
+          with contextlib.redirect_stderr(stderr):
+              try:
+                  foreign.execute()
+              except module.BootstrapError as exc:
+                  assert "ошибка проекта" in str(exc)
+              else:
+                  raise AssertionError("Первая ошибка не должна теряться")
+          assert foreign.present and "чужой контейнер" in stderr.getvalue()
+          assert not any(event.startswith(("stop", "destroy")) for event in foreign.events)
+          assert foreign.events.count("revoke_token") == 2
           PY
 
       - name: Check persistent lock discipline
